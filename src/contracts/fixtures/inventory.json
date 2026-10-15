@@ -1,0 +1,15 @@
+{
+  "schema": "canonical.InventoryItem",
+  "version": "1.0",
+  "product_id": "b3f1c2a0-4e51-4a2e-9d3e-000000000001",
+  "sku": "AMOX-500-30",
+  "quantity_on_hand": 240,
+  "reserved_quantity": 15,
+  "available_quantity": 225,
+  "unit": "box",
+  "location_id": "main-store",
+  "reorder_point": 50,
+  "updated_at": "2026-09-24T10:15:00Z",
+  "tenant_id": "00000000-0000-0000-0000-000000000001"
+}
+ 

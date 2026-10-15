@@ -1,0 +1,20 @@
+{
+  "event_id": "8f2b3c10-0000-0000-0000-000000000001",
+  "event_type": "SaleCreated",
+  "occurred_at": "2026-09-24T10:16:32Z",
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "source": "erp-backend",
+  "version": "1.0",
+  "payload": {
+    "sale_id": "00000000-0000-0000-0000-000000000001",
+    "lines": [
+      {
+        "product_id": "b3f1c2a0-4e51-4a2e-9d3e-000000000001",
+        "quantity": 2,
+        "unit_price": 45.5
+      }
+    ],
+    "customer_id": "00000000-0000-0000-0000-000000000002",
+    "total_amount": 91.0
+  }
+}

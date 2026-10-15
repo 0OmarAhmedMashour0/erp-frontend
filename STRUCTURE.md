@@ -11,7 +11,7 @@ src/
 ├── main.tsx
 ├── index.css                      Tailwind entry
 │
-├── contracts/                     backend contracts (READ-ONLY)
+├── contracts/                     
 │
 ├── routes/                        routing
 │   ├── router.tsx                 ALL routes are defined here

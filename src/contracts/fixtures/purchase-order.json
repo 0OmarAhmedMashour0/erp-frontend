@@ -1,0 +1,16 @@
+{
+  "schema": "canonical.PurchaseOrder",
+  "version": "1.0",
+  "supplier_id": "8a1e9c20-1b2c-4d3e-8f9a-000000000001",
+  "lines": [
+    {
+      "product_id": "b3f1c2a0-4e51-4a2e-9d3e-000000000001",
+      "quantity": 300
+    }
+  ],
+  "created_by": {
+    "type": "agent",
+    "session_id": "sess-00000000-0000-0000-0000-000000000001",
+    "approved_by": "00000000-0000-0000-0000-000000000002"
+  }
+}
