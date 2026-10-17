@@ -1,0 +1,42 @@
+{
+  "sales_order_id": "c8d9e0f1-8888-4ccc-8d3e-89012345def0",
+  "branch_id": "d4e5f6a7-3333-4c44-9d55-bbccddeeffaa",
+  "created_by_employee_id": "ef456789-0123-4abc-8bcd-ef01234567ab",
+  "order_no": "SO-2026-000342",
+  "channel": "POS",
+  "order_status": "DRAFT",
+  "currency_code": "EGP",
+  "estimated_subtotal": "69.50",
+  "estimated_tax_total": "3.36",
+  "estimated_grand_total": "72.86",
+  "created_at": "2026-10-11T14:02:10Z",
+  "completed_at": null,
+  "lines": [
+    {
+      "order_line_id": "c8d9e0f1-1010-4c1d-8a1e-1a2b3c4d5e01",
+      "product_id": "e5f6a7b8-3333-4ddd-8b2c-34567890abc1",
+      "product_uom_id": "a2b3c4d5-0202-4aaa-8b2c-67890123bcde",
+      "entered_qty": "2.0000",
+      "conversion_snapshot": "10.000000",
+      "quantity_base": "20.0000",
+      "unit_price_snapshot": "12.0000",
+      "discount_amount": "0.00",
+      "tax_rate_snapshot": "0.1400",
+      "tax_amount_snapshot": "3.36",
+      "line_total": "27.36"
+    },
+    {
+      "order_line_id": "c8d9e0f1-2020-4c2e-9b2f-1a2b3c4d5e02",
+      "product_id": "abababab-5555-4c6c-8d7b-4567890abcde",
+      "product_uom_id": "abababab-0404-4ccc-8d5e-89012345def0",
+      "entered_qty": "1.0000",
+      "conversion_snapshot": "1.000000",
+      "quantity_base": "1.0000",
+      "unit_price_snapshot": "45.5000",
+      "discount_amount": "0.00",
+      "tax_rate_snapshot": "0.0000",
+      "tax_amount_snapshot": "0.00",
+      "line_total": "45.50"
+    }
+  ]
+}

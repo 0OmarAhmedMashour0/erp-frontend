@@ -1,0 +1,20 @@
+{
+  "supplier_id": "fd8a71c2-5555-4a11-8b1c-8e8ea4a4b0c1",
+  "supplier_code": "SUP-EG-CLX",
+  "legal_name": "El-Nasr Pharmaceutical Trading Co.",
+  "tax_registration_number": "EG-TRN-3004571-AA",
+  "contact_email": "trade@elnasr-pharma.com.eg",
+  "phone": "+20-2-2277-8890",
+  "address": {
+    "line1": "45 Industrial Zone, 10th of Ramadan",
+    "line2": null,
+    "city": "Sharqia",
+    "region": "10th of Ramadan City",
+    "postal_code": "44631",
+    "country_code": "EG"
+  },
+  "default_lead_time_days": 7,
+  "is_active": true,
+  "created_at": "2025-07-20T12:00:00Z",
+  "updated_at": "2026-09-12T16:45:00Z"
+}

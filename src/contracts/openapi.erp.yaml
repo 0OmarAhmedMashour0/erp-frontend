@@ -1,0 +1,3465 @@
+# =============================================================================
+# Pharmacy ERP — Master OpenAPI Contract (Frontend ↔ Backend)
+# =============================================================================
+# Derived from: ERP-Backend-Blueprint-v1.1.md (backend team spec)
+#
+# Audience: Frontend team (POS web client, admin/back-office web client).
+# Canonical /api/v1/canonical/* endpoints are NOT in this contract — they are
+# the external Brain/AI boundary owned by the backend integration module,
+# not a frontend surface.
+#
+# Conventions (binding):
+#  - All routes versioned under /api/v1
+#  - All mutations require header: Idempotency-Key
+#  - All reads use W3C traceparent propagation
+#  - Errors use the single ApiError envelope; each code maps to exactly one
+#    HTTP status (400/401/403/404/409/422/500)
+#  - Tenant (organization_id) ALWAYS derives from the JWT, never a request body
+#    or query field. Any client-supplied organization_id is ignored by the server.
+#  - Server is authoritative for: prices, tax rates, totals, change due,
+#    inventory availability, allocation (FEFO), state transitions.
+#    FE-supplied totals are informational only.
+#  - Runtime ownership: endpoints tagged x-runtime Cloud or BranchLocal.
+#    Asking a runtime for a route it does not own returns 404/405 — the FE must
+#    treat the route table below as runtime-qualified.
+#  - Each operation is annotated x-stage: 1|2|3 (cumulative release stages).
+# =============================================================================
+openapi: 3.0.3
+info:
+  title: Pharmacy ERP API — Frontend Contract
+  version: "1.0.0"
+  description: |
+    Frontend-facing contract for the Pharmacy ERP backend MVP.
+
+    Two runtime modes deploy this same API surface:
+      - ERP_RUNTIME_MODE=Cloud      — consolidation API
+      - ERP_RUNTIME_MODE=BranchLocal — branch POS API (offline-capable)
+
+    Stages are cumulative: Stage 1 must ship before Stage 2, Stage 2 before 3.
+servers:
+  - url: https://{host}/api/v1
+    variables:
+      host:
+        default: erp.example.com
+        description: Cloud API host (or branch-local LAN host for POS deploy)
+
+tags:
+  - name: Auth
+    description: Authentication, token rotation, current-user context (Stage 1)
+  - name: Organization
+    description: Provisioning + organization management (Stage 1)
+  - name: Branch
+    description: Branch management + branch runtime enrollment (Stage 1)
+  - name: Users
+    description: Admin-only user administration (Stage 1)
+  - name: Employees
+    description: Employee management (Stage 1)
+  - name: Catalog
+    description: Categories, products, UOMs, reorder rules (Stage 1)
+  - name: Inventory
+    description: Locations, batches, balances, ledger, adjustments (Stage 1)
+  - name: Sales
+    description: POS orders, invoices, returns, refunds (Stage 2, BranchLocal)
+  - name: Purchasing
+    description: Suppliers, POs, receiving, payments, vendor returns (Stage 3)
+
+paths:
+  # ===========================================================================
+  # AUTH (Stage 1)
+  # ===========================================================================
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: authLogin
+      summary: Authenticate and issue access/refresh tokens
+      description: |
+        Resolves Organization by unique `organization_code`, then the user by
+        (organization_id, normalized_username). The issued access token embeds
+        the full trusted scope (roles, organization_id, branch_scope,
+        branch_ids). Branch-local tokens are constrained to the enrolled
+        branch and have max validity 24h.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Tokens + current user context
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: authRefresh
+      summary: Rotate refresh token (rotation on every use)
+      description: >
+        Submit the current refresh token; receive a new family token pair.
+        A reused (already-consumed) refresh token revokes its whole token
+        family — the FE must then force re-login.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshTokenRequest" }
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPairResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: authLogout
+      summary: Revoke current refresh-token family
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogoutRequest" }
+      responses:
+        "204": { description: Family revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: authMe
+      summary: Current authenticated context (trusted scope)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user + organization + branch scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrentUserContextDto" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ===========================================================================
+  # ORGANIZATION (Stage 1)
+  # ===========================================================================
+  /organizations:
+    post:
+      tags: [Organization]
+      operationId: createOrganization
+      summary: PlatformProvisioner-only atomic tenant creation
+      description: |
+        Requires the deployment-only PlatformProvisioner credential (not a
+        normal tenant user session). Atomically creates Organization, first
+        Branch, first Employee, and first Admin account. Seeds one SELLABLE,
+        one QUARANTINE, one SCRAP location for the branch.
+      security:
+        - platformProvisioner: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrganizationRequest" }
+      responses:
+        "201":
+          description: Created organization + initial admin context + enrollment setup state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganizationSetupResultDto" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # BRANCHES (Stage 1)
+  # ===========================================================================
+  /branches:
+    get:
+      tags: [Branch]
+      operationId: listBranches
+      summary: List branches (organization-scoped)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/includeInactive"
+      responses:
+        "200":
+          description: Paged branches
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedBranchDto"
+        "403": { $ref: "#/components/responses/ForbiddenBranch" }
+    post:
+      tags: [Branch]
+      operationId: createBranch
+      summary: Create branch (Admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BranchRequest" }
+      responses:
+        "201":
+          description: Created branch (locations are auto-seeded)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BranchDto" }
+        "403": { $ref: "#/components/responses/ForbiddenBranch" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /branches/{branchId}:
+    parameters:
+      - $ref: "#/components/parameters/branchId"
+    get:
+      tags: [Branch]
+      operationId: getBranch
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Branch detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BranchDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Branch]
+      operationId: patchBranch
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BranchPatchRequest" }
+      responses:
+        "200":
+          description: Updated branch
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BranchDto" }
+        "403": { $ref: "#/components/responses/ForbiddenBranch" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /branches/{branchId}/enrollment-tokens:
+    post:
+      tags: [Branch]
+      operationId: createBranchEnrollmentToken
+      summary: Admin issues single-use short-lived branch enrollment token
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/branchId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "201":
+          description: Enrollment token (single use, expiring)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentTokenDto" }
+        "403": { $ref: "#/components/responses/ForbiddenBranch" }
+
+  /branch-enrollment:
+    post:
+      tags: [Branch]
+      operationId: redeemBranchEnrollment
+      summary: Branch runtime redeems enrollment token
+      description: |
+        Redeems a single-use token; returns organization_id, branch_id,
+        runtime credential, initial sync cursor, and credential expiry.
+        Runs on the branch-local API (x-runtime BranchLocal).
+      security: []
+      x-runtime: BranchLocal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BranchEnrollmentRequest" }
+      responses:
+        "200":
+          description: Runtime credential + initial cursor
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BranchEnrollmentResultDto" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { description: Token expired or already used }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # USERS (Stage 1, Admin-only)
+  # ===========================================================================
+  /users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List users (Admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Paged users
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedUserDto" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create user (Admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: Created user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /users/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/userId"
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get user (Admin only)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Users]
+      operationId: patchUser
+      summary: Update role/access/active (Admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserPatchRequest" }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /users/{userId}/password-reset:
+    post:
+      tags: [Users]
+      operationId: resetUserPassword
+      summary: Admin password reset (Admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordResetRequest" }
+      responses:
+        "204": { description: Password reset }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /users/{userId}/revoke-sessions:
+    post:
+      tags: [Users]
+      operationId: revokeUserSessions
+      summary: Revoke all refresh-token families (Admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "204": { description: Sessions revoked }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ===========================================================================
+  # EMPLOYEES (Stage 1)
+  # ===========================================================================
+  /employees:
+    get:
+      tags: [Employees]
+      operationId: listEmployees
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/branchIdQuery"
+      responses:
+        "200":
+          description: Paged employees
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedEmployeeDto" }
+    post:
+      tags: [Employees]
+      operationId: createEmployee
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmployeeRequest" }
+      responses:
+        "201":
+          description: Created employee
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmployeeDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /employees/{employeeId}:
+    parameters:
+      - $ref: "#/components/parameters/employeeId"
+    get:
+      tags: [Employees]
+      operationId: getEmployee
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Employee detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmployeeDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Employees]
+      operationId: patchEmployee
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmployeePatchRequest" }
+      responses:
+        "200":
+          description: Updated employee
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmployeeDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # PRODUCT CATEGORIES (Stage 1)
+  # ===========================================================================
+  /product-categories:
+    get:
+      tags: [Catalog]
+      operationId: listProductCategories
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/includeInactive"
+      responses:
+        "200":
+          description: Paged categories (tree via parent_category_id)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedProductCategoryDto" }
+    post:
+      tags: [Catalog]
+      operationId: createProductCategory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductCategoryRequest" }
+      responses:
+        "201":
+          description: Created category
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductCategoryDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /product-categories/{categoryId}:
+    parameters:
+      - $ref: "#/components/parameters/categoryId"
+    get:
+      tags: [Catalog]
+      operationId: getProductCategory
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Category detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductCategoryDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Catalog]
+      operationId: patchProductCategory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductCategoryPatchRequest" }
+      responses:
+        "200":
+          description: Updated category
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductCategoryDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # PRODUCTS (Stage 1)
+  # ===========================================================================
+  /products:
+    get:
+      tags: [Catalog]
+      operationId: listProducts
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - name: search
+          in: query
+          description: Match on SKU / barcode / name (server-defined behavior)
+          schema: { type: string, maxLength: 180 }
+        - name: categoryId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/includeInactive"
+      responses:
+        "200":
+          description: Paged products
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedProductDto" }
+    post:
+      tags: [Catalog]
+      operationId: createProduct
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateProductRequest" }
+      responses:
+        "201":
+          description: Created product (with initial base UOM)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /products/{productId}:
+    parameters:
+      - $ref: "#/components/parameters/productId"
+    get:
+      tags: [Catalog]
+      operationId: getProduct
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Product detail incl. UOMs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Catalog]
+      operationId: patchProduct
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductPatchRequest" }
+      responses:
+        "200":
+          description: Updated product
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /products/{productId}/uoms:
+    parameters:
+      - $ref: "#/components/parameters/productId"
+    get:
+      tags: [Catalog]
+      operationId: listProductUoms
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: UOM list for product (incl. inactive)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProductUomDto" }
+    post:
+      tags: [Catalog]
+      operationId: createProductUom
+      summary: Item-level add UOM (never full-list replace)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductUomRequest" }
+      responses:
+        "201":
+          description: Created UOM
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductUomDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /products/{productId}/uoms/{uomId}:
+    parameters:
+      - $ref: "#/components/parameters/productId"
+      - $ref: "#/components/parameters/uomId"
+    patch:
+      tags: [Catalog]
+      operationId: patchProductUom
+      summary: |
+        Item-level UOM update. Permitted non-historical attributes only;
+        is_active=false to deactivate. Never hard delete. Conversion factor
+        and is_base become immutable once referenced by a posted document
+        or stock.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductUomPatchRequest" }
+      responses:
+        "200":
+          description: Updated UOM
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductUomDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /branches/{branchId}/products/{productId}/reorder-rule:
+    parameters:
+      - $ref: "#/components/parameters/branchId"
+      - $ref: "#/components/parameters/productId"
+    get:
+      tags: [Catalog]
+      operationId: getReorderRule
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Reorder rule (or null if none configured)
+          content:
+            application/json:
+              schema:
+                type: object
+                nullable: true
+                properties:
+                  rule: { $ref: "#/components/schemas/ReorderRuleDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Catalog]
+      operationId: putReorderRule
+      summary: Create or update branch reorder rule
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReorderRuleRequest" }
+      responses:
+        "200":
+          description: Upserted rule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReorderRuleDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # INVENTORY (Stage 1)
+  # ===========================================================================
+  /inventory/locations:
+    get:
+      tags: [Inventory]
+      operationId: listInventoryLocations
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: locationType
+          in: query
+          schema: { $ref: "#/components/schemas/LocationType" }
+        - $ref: "#/components/parameters/includeInactive"
+      responses:
+        "200":
+          description: Paged locations. Branches are seeded with SELLABLE / QUARANTINE / SCRAP defaults.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedInventoryLocationDto" }
+    post:
+      tags: [Inventory]
+      operationId: createInventoryLocation
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InventoryLocationRequest" }
+      responses:
+        "201":
+          description: Created location
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryLocationDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /inventory/locations/{locationId}:
+    parameters:
+      - $ref: "#/components/parameters/locationId"
+    get:
+      tags: [Inventory]
+      operationId: getInventoryLocation
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Location detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryLocationDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Inventory]
+      operationId: patchInventoryLocation
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InventoryLocationPatchRequest" }
+      responses:
+        "200":
+          description: Updated location
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryLocationDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /inventory/batches:
+    get:
+      tags: [Inventory]
+      operationId: listInventoryBatches
+      summary: Read batches (READ-ONLY resource — batches are only created by ledger workflows)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: productId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: qualityStatus
+          in: query
+          schema: { $ref: "#/components/schemas/BatchQualityStatus" }
+      responses:
+        "200":
+          description: Paged batches
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedInventoryBatchDto" }
+
+  /inventory/balances:
+    get:
+      tags: [Inventory]
+      operationId: listInventoryBalances
+      summary: Balance projection (branch/product/location/lot filters)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: productId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: locationId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: batchId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Paged balances (no reserved quantity in MVP)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedInventoryBalanceDto" }
+
+  /inventory/transactions:
+    get:
+      tags: [Inventory]
+      operationId: listInventoryTransactions
+      summary: Paginated append-only ledger history
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: transactionType
+          in: query
+          schema: { $ref: "#/components/schemas/InventoryTxnType" }
+        - name: productId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Paged ledger transactions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedInventoryTxnDto" }
+
+  /inventory/transactions/{txnId}:
+    get:
+      tags: [Inventory]
+      operationId: getInventoryTransaction
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/txnId"
+      responses:
+        "200":
+          description: Transaction + lines
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryTxnDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /inventory/adjustments:
+    post:
+      tags: [Inventory]
+      operationId: postInventoryAdjustment
+      summary: |
+        Posting-only command: OPENING_BALANCE or authorized stock correction
+        (ADJUSTMENT_IN / ADJUSTMENT_OUT). Branch-local; requires counted
+        quantity, batch (or NON-LOT), location, and authorized unit-cost.
+        DRAFT editing allowed; POSTED rows immutable; corrections use REVERSAL.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InventoryTxnRequest" }
+      responses:
+        "201":
+          description: Posted or draft adjustment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryTxnDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /inventory/adjustments/{txnId}:
+    parameters:
+      - $ref: "#/components/parameters/txnId"
+    patch:
+      tags: [Inventory]
+      operationId: patchInventoryAdjustment
+      summary: Edit DRAFT adjustment only; POSTED immutable (409 otherwise)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InventoryTxnRequest" }
+      responses:
+        "200":
+          description: Updated draft
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryTxnDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    post:
+      tags: [Inventory]
+      operationId: postOrReverseInventoryAdjustment
+      summary: Post a DRAFT adjustment (X-ERP-Action=POST) or post a REVERSAL of this transaction (X-ERP-Action=REVERSE)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/txnId"
+        - $ref: "#/components/parameters/idempotencyKey"
+        - name: X-ERP-Action
+          in: header
+          required: false
+          description: "POST (default) commits a DRAFT; REVERSE posts a reversal of this POSTED transaction as a new linked txn."
+          schema:
+            type: string
+            enum: [POST, REVERSE]
+      responses:
+        "201":
+          description: Posted transaction
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryTxnDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /inventory/adjustments/{txnId}/cancel:
+    post:
+      tags: [Inventory]
+      operationId: cancelInventoryAdjustment
+      summary: Cancel an unposted DRAFT only; POSTED transactions are immutable (409)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/txnId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "204": { description: Draft cancelled }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ===========================================================================
+  # SALES ORDERS (Stage 2, BranchLocal)
+  # ===========================================================================
+  /sales-orders:
+    post:
+      tags: [Sales]
+      operationId: createSalesOrder
+      summary: Create cashier DRAFT order (does NOT reserve stock)
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSalesOrderRequest" }
+      responses:
+        "201":
+          description: Draft order with server-priced lines
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SalesOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    get:
+      tags: [Sales]
+      operationId: listSalesOrders
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/SalesOrderStatus" }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Paged orders
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedSalesOrderDto" }
+
+  /sales-orders/{salesOrderId}:
+    get:
+      tags: [Sales]
+      operationId: getSalesOrder
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/salesOrderId"
+      responses:
+        "200":
+          description: Order + lines
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SalesOrderDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /sales-orders/{salesOrderId}/lines:
+    put:
+      tags: [Sales]
+      operationId: putSalesOrderLines
+      summary: Replace draft line set (DRAFT only)
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/salesOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SalesOrderLinesRequest" }
+      responses:
+        "200":
+          description: Updated draft order (server re-prices lines)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SalesOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /sales-orders/{salesOrderId}/complete:
+    post:
+      tags: [Sales]
+      operationId: completeSalesOrder
+      summary: |
+        Atomic: invoice + cash payment + FEFO stock issue + audit + sync outbox.
+        Full cash payment only in MVP. Server computes totals from line
+        snapshots. FE re-sends only cash_tendered + method.
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/salesOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompleteSalesOrderRequest" }
+      responses:
+        "201":
+          description: Completed order + invoice + payment + inventory txn refs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompleteSalesOrderResultDto" }
+        "409":
+          description: OUT_OF_STOCK (typed, per-line) / INVALID_STATE_TRANSITION / IDEMPOTENCY_MISMATCH
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /sales-orders/{salesOrderId}/cancel:
+    post:
+      tags: [Sales]
+      operationId: cancelSalesOrder
+      summary: Cancel DRAFT; no stock reversal needed
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/salesOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "204": { description: Draft cancelled }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ===========================================================================
+  # SALES INVOICES (Stage 2, BranchLocal)
+  # ===========================================================================
+  /sales-invoices:
+    get:
+      tags: [Sales]
+      operationId: listSalesInvoices
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: invoiceNo
+          in: query
+          schema: { type: string, maxLength: 40 }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Paged invoices
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedSalesInvoiceDto" }
+
+  /sales-invoices/{invoiceId}:
+    get:
+      tags: [Sales]
+      operationId: getSalesInvoice
+      summary: Invoice lines with immutable snapshots + settlement projection
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/invoiceId"
+      responses:
+        "200":
+          description: Invoice detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SalesInvoiceDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ===========================================================================
+  # SALES RETURNS + REFUNDS (Stage 2, BranchLocal)
+  # ===========================================================================
+  /sales-returns:
+    post:
+      tags: [Sales]
+      operationId: createSalesReturn
+      summary: |
+        Validate + post return, stock receipt, and (if requested) cash refund,
+        all atomically. Must be at the invoice branch; within the Organization
+        14-day window; quantity capped by remaining sold allocation. FE does
+        NOT choose batch/location — the server derives them from the posted
+        SALE_ISSUE ledger lines. Disposition RESTOCK / QUARANTINE / SCRAP.
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SalesReturnRequest" }
+      responses:
+        "201":
+          description: Posted return (may include refund + stock txn)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SalesReturnDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422":
+          description: Expiry / 14-day / over-return / approver policy violations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+    get:
+      tags: [Sales]
+      operationId: listSalesReturns
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/branchIdQueryRequired"
+        - name: invoiceId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Paged returns
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedSalesReturnDto" }
+
+  /sales-returns/{returnId}:
+    get:
+      tags: [Sales]
+      operationId: getSalesReturn
+      x-runtime: BranchLocal
+      x-stage: 2
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/returnId"
+      responses:
+        "200":
+          description: Return + lines + stock txn + refund
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SalesReturnDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ===========================================================================
+  # SUPPLIERS (Stage 3, Cloud)
+  # ===========================================================================
+  /suppliers:
+    get:
+      tags: [Purchasing]
+      operationId: listSuppliers
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/includeInactive"
+      responses:
+        "200":
+          description: Paged suppliers
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedSupplierDto" }
+    post:
+      tags: [Purchasing]
+      operationId: createSupplier
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSupplierRequest" }
+      responses:
+        "201":
+          description: Created supplier
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /suppliers/{supplierId}:
+    parameters:
+      - $ref: "#/components/parameters/supplierId"
+    get:
+      tags: [Purchasing]
+      operationId: getSupplier
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Supplier detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Purchasing]
+      operationId: patchSupplier
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupplierPatchRequest" }
+      responses:
+        "200":
+          description: Updated supplier
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /suppliers/{supplierId}/status:
+    patch:
+      tags: [Purchasing]
+      operationId: patchSupplierStatus
+      summary: Soft deactivate / reactivate supplier
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/supplierId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupplierStatusPatchRequest" }
+      responses:
+        "200":
+          description: Updated supplier
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ===========================================================================
+  # PURCHASE ORDERS (Stage 3, Cloud + BranchLocal for receive)
+  # ===========================================================================
+  /purchase-orders:
+    post:
+      tags: [Purchasing]
+      operationId: createPurchaseOrder
+      summary: |
+        Create DRAFT PO. Server computes subtotal / tax_total / additional_cost
+        allocation to lines pro-rata ordered line net; normalizes to base UOM;
+        snapshots prices. Currency must equal Organization base_currency.
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePurchaseOrderRequest" }
+      responses:
+        "201":
+          description: Draft PO with per-line allocations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    get:
+      tags: [Purchasing]
+      operationId: listPurchaseOrders
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: supplierId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/branchIdQuery"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/PurchaseOrderStatus" }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Paged POs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedPurchaseOrderDto" }
+
+  /purchase-orders/{purchaseOrderId}:
+    parameters:
+      - $ref: "#/components/parameters/purchaseOrderId"
+    get:
+      tags: [Purchasing]
+      operationId: getPurchaseOrder
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: PO detail + lines + totals + payments summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Purchasing]
+      operationId: patchPurchaseOrder
+      summary: DRAFT-only edit (409 after approval/order)
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PurchaseOrderPatchRequest" }
+      responses:
+        "200":
+          description: Updated draft PO
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    post:
+      tags: [Purchasing]
+      operationId: cancelPurchaseOrder
+      summary: |
+        DRAFT/APPROVED pre-order cancel with reason, only when paid_amount=0.
+        After ORDERED, remaining-quantity cancellation must use /cancel-remaining.
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancelPurchaseOrderRequest" }
+      responses:
+        "200":
+          description: Cancelled PO (CANCELLED or remaining-cancelled transition)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /purchase-orders/{purchaseOrderId}/approve:
+    post:
+      tags: [Purchasing]
+      operationId: approvePurchaseOrder
+      summary: DRAFT → APPROVED
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/purchaseOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "200":
+          description: Approved PO
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /purchase-orders/{purchaseOrderId}/order:
+    post:
+      tags: [Purchasing]
+      operationId: orderPurchaseOrder
+      summary: APPROVED → ORDERED (ordered quantities and terms become immutable)
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/purchaseOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderPurchaseOrderRequest" }
+      responses:
+        "200":
+          description: Ordered PO
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /purchase-orders/{purchaseOrderId}/receive:
+    post:
+      tags: [Purchasing]
+      operationId: receivePurchaseOrder
+      summary: |
+        One-step partial receiving. Validates the full request, creates
+        InventoryBatch (UUIDv5 deterministic), ledger txn + lines, updates
+        received/rejected cumulative fields, balance, and moving average —
+        all atomically. Idempotent; same key cannot post twice.
+        Expired lots rejected for sellable; shelf-life policy enforced,
+        exception role-guarded with reason.
+      x-runtime: BranchLocal
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/purchaseOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReceivePurchaseOrderRequest" }
+      responses:
+        "201":
+          description: Receipt result + inventory txn refs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseReceiptResultDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422":
+          description: EXPIRY_POLICY_VIOLATION / shelf-life / quantity policy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /purchase-orders/{purchaseOrderId}/cancel-remaining:
+    post:
+      tags: [Purchasing]
+      operationId: cancelPurchaseOrderRemaining
+      summary: |
+        BranchLocal-only close of remaining obligation (reason + key); PO
+        transitions to CLOSED when no uncancelled quantity remains; emits
+        CANCEL_REMAINING_PURCHASE_ORDER fact to cloud.
+      x-runtime: BranchLocal
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/purchaseOrderId"
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancelPurchaseOrderRemainingRequest" }
+      responses:
+        "200":
+          description: CLOSED PO
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # SUPPLIER PAYMENTS (Stage 3, Cloud)
+  # ===========================================================================
+  /supplier-payments:
+    post:
+      tags: [Purchasing]
+      operationId: createSupplierPayment
+      summary: |
+        Order-level cash settlement against PO commitment. Not AP ledger, no
+        supplier-invoice match. Only for APPROVED/ORDERED/PARTIALLY_RECEIVED/
+        RECEIVED/CLOSED POs with positive outstanding; amount ≤ outstanding;
+        currency must match PO (which equals base_currency).
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordSupplierPaymentRequest" }
+      responses:
+        "201":
+          description: Posted payment + updated PO payment status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierPaymentDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /supplier-payments/{supplierPaymentId}:
+    get:
+      tags: [Purchasing]
+      operationId: getSupplierPayment
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/supplierPaymentId"
+      responses:
+        "200":
+          description: Payment detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierPaymentDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ===========================================================================
+  # VENDOR RETURNS (Stage 3)
+  # ===========================================================================
+  /vendor-returns:
+    get:
+      tags: [Purchasing]
+      operationId: listVendorReturns
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/branchIdQuery"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/VendorReturnStatus" }
+      responses:
+        "200":
+          description: Paged vendor returns
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PagedVendorReturnDto" }
+    post:
+      tags: [Purchasing]
+      operationId: createVendorReturn
+      summary: Create DRAFT return (lines reference PO line + batch + location)
+      x-runtime: BranchLocal
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateVendorReturnRequest" }
+      responses:
+        "201":
+          description: Draft vendor return
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorReturnDto" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /vendor-returns/{vendorReturnId}:
+    parameters:
+      - $ref: "#/components/parameters/vendorReturnId"
+    get:
+      tags: [Purchasing]
+      operationId: getVendorReturn
+      x-runtime: Cloud
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Return + lines + linked inventory txn
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorReturnDto" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /vendor-returns/{vendorReturnId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/vendorReturnId"
+    post:
+      tags: [Purchasing]
+      operationId: cancelVendorReturn
+      summary: DRAFT-only cancel
+      x-runtime: BranchLocal
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "200":
+          description: Cancelled return
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorReturnDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /vendor-returns/{vendorReturnId}/post:
+    parameters:
+      - $ref: "#/components/parameters/vendorReturnId"
+    post:
+      tags: [Purchasing]
+      operationId: postVendorReturn
+      summary: |
+        Posts vendor return, producing a negative VENDOR_RETURN_OUT ledger
+        transaction, updating balances/cost. Batch quantity cannot exceed
+        accepted received stock still available.
+      x-runtime: BranchLocal
+      x-stage: 3
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      responses:
+        "200":
+          description: Posted return
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorReturnDto" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  # ===========================================================================
+  # NOTES ON NON-FRONTEND ENDPOINTS (excluded from this contract):
+  #
+  # /api/v1/canonical/*        — external Brain/AI boundary, not consumed by FE
+  # /api/v1/sync/operations    — internal local→cloud push, service identity
+  # /api/v1/sync/bootstrap     — internal branch enrollment bootstrap
+  # /api/v1/sync/changes       — internal branch cursor feed
+  # /api/v1/sync/operations/{id}/retry — admin-only sync retry, cloud; scoped
+  #        to sync administrators via sync:retry scope. No FE surface in MVP.
+  #
+  # A branch-local FE calling a cloud-only route (e.g. /suppliers) gets
+  # 404/405; the FE must branch on the declared runtime mode (see README).
+  # ===========================================================================
+
+components:
+  # ===========================================================================
+  # SECURITY SCHEMES
+  # ===========================================================================
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User JWT (RS256, JWKS-validated). Claims: sub, roles,
+        organization_id, branch_scope, branch_ids, scopes.
+    platformProvisioner:
+      type: http
+      scheme: bearer
+      description: Deployment-only credential for POST /organizations.
+
+  # ===========================================================================
+  # REUSABLE PARAMETERS
+  # ===========================================================================
+  parameters:
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Stable per-mutation key (UUID or opaque, max 100 chars). Same key with
+        same payload hash replays the original stored response; same key with
+        a DIFFERENT payload → 409 IDEMPOTENCY_MISMATCH.
+      schema: { type: string, minLength: 16, maxLength: 100 }
+    traceparent:
+      name: traceparent
+      in: header
+      required: false
+      description: W3C trace propagation on every call.
+      schema: { type: string, pattern: "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$" }
+    cursor:
+      name: cursor
+      in: query
+      description: Opaque continuation cursor from a previous PagedResult response.
+      schema: { type: string, maxLength: 500 }
+    limit:
+      name: limit
+      in: query
+      description: Page size (server-defined default and max).
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    includeInactive:
+      name: includeInactive
+      in: query
+      description: Include soft-deactivated (is_active=false) master data in list results.
+      schema: { type: boolean, default: false }
+    branchIdQuery:
+      name: branchId
+      in: query
+      schema: { type: string, format: uuid }
+      description: Optional branch filter; must be within caller branch scope.
+    branchIdQueryRequired:
+      name: branchId
+      in: query
+      required: true
+      schema: { type: string, format: uuid }
+      description: Required branch filter; must be within caller branch scope.
+    organizationId:
+      name: organizationId
+      in: path
+      required: true
+      description: Never trusted from the client; only used in provisioner URLs (if any).
+      schema: { type: string, format: uuid }
+    branchId:
+      name: branchId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    userId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    employeeId:
+      name: employeeId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    categoryId:
+      name: categoryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    productId:
+      name: productId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    uomId:
+      name: uomId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    locationId:
+      name: locationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    txnId:
+      name: txnId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    salesOrderId:
+      name: salesOrderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    invoiceId:
+      name: invoiceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    returnId:
+      name: returnId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    supplierId:
+      name: supplierId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    purchaseOrderId:
+      name: purchaseOrderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    supplierPaymentId:
+      name: supplierPaymentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    vendorReturnId:
+      name: vendorReturnId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  # ===========================================================================
+  # REUSABLE RESPONSES
+  # ===========================================================================
+  responses:
+    Unauthorized:
+      description: Missing/invalid/expired token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Forbidden:
+      description: Authenticated but not permitted
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ForbiddenBranch:
+      description: |
+        Actor authenticated but lacks branch access. Errors shall use code
+        FORBIDDEN_BRANCH when branch scope is the failing check.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFound:
+      description: Resource not in scope or does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Conflict:
+      description: State / sequence / idempotency / stock conflict
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ValidationError:
+      description: Well-formed but field/domain validation failed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  # ===========================================================================
+  # SCHEMAS
+  # ===========================================================================
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Common / shared
+    # -------------------------------------------------------------------------
+    Money:
+      type: string
+      pattern: '^-?\d{1,16}(\.\d{1,2})?$'
+      description: |
+        Serialized as plain decimal string to preserve numeric(18,2) precision
+        exactly. Never use IEEE-754 floats for money on FE if you want to avoid
+        drift; treat this as a fixed-2-decimal string.
+      examples: ["1250.00", "-99.50", "0.00"]
+
+    Numeric4:
+      type: string
+      pattern: '^-?\d{1,14}(\.\d{1,4})?$'
+      description: numeric(18,4) serialized as fixed-4 decimal string (qty / unit cost).
+
+    Numeric6:
+      type: string
+      pattern: '^-?\d{1,12}(\.\d{1,6})?$'
+      description: numeric(18,6) serialized as fixed-6 decimal string (conversion factor).
+
+    TaxRate:
+      type: string
+      pattern: '^(0|0\.\d{1,4}|1(\.0{1,4})?)$'
+      description: Fractional tax rate numeric(9,4); 0.1400 = 14%.
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: UTC timestamptz ISO 8601 (suffix Z).
+
+    Uuid:
+      type: string
+      format: uuid
+
+    Role:
+      type: string
+      enum: [Admin, Pharmacist, Cashier]
+      description: Case-sensitive closed set.
+
+    BranchScope:
+      type: string
+      enum: [ALL, ASSIGNED]
+      description: ALL only permitted for Admin (DB CHECK enforces).
+
+    PermissionScope:
+      type: string
+      enum:
+        - inventory:read
+        - inventory:write
+        - sales:read
+        - sales:write
+        - return:read
+        - return:write
+        - purchase-order:read
+        - purchase-order:draft
+        - purchase-order:approve
+        - purchase-order:receive
+        - supplier-payment:write
+        - sync:retry
+        - user:admin
+      description: Authorization vocabulary; endpoint policy + resource state remain authoritative.
+
+    RuntimeMode:
+      type: string
+      enum: [Cloud, BranchLocal]
+      description: Which runtime deployment the FE is currently talking to.
+
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Exactly ONE canonical HTTP status per code. Closed set:
+                MALFORMED_REQUEST(400), UNAUTHORIZED(401),
+                FORBIDDEN(403), FORBIDDEN_BRANCH(403),
+                NOT_FOUND(404), CONFLICT(409),
+                INVALID_STATE_TRANSITION(409),
+                OUT_OF_STOCK(409), IDEMPOTENCY_MISMATCH(409),
+                VALIDATION_ERROR(422), EXPIRY_POLICY_VIOLATION(422),
+                INTERNAL_ERROR(500).
+              enum:
+                - MALFORMED_REQUEST
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - FORBIDDEN_BRANCH
+                - NOT_FOUND
+                - CONFLICT
+                - INVALID_STATE_TRANSITION
+                - OUT_OF_STOCK
+                - IDEMPOTENCY_MISMATCH
+                - VALIDATION_ERROR
+                - EXPIRY_POLICY_VIOLATION
+                - INTERNAL_ERROR
+            message:
+              type: string
+              description: Human-readable; safe to display to user.
+            details:
+              type: array
+              description: Field-level issues (presence optional).
+              items:
+                type: object
+                properties:
+                  field: { type: string, description: JSON path e.g. "lines[0].quantity" }
+                  issue: { type: string }
+            trace_id:
+              type: string
+              description: Matches the W3C traceparent propagated in the call.
+
+    PagedResult:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          description: Page items; conforms to item-specific subclass contract.
+        nextCursor:
+          nullable: true
+          type: string
+          description: Opaque; null means end of results. Use nextCursor in next
+            call's `cursor` query param.
+
+    # -------------------------------------------------------------------------
+    # Auth
+    # -------------------------------------------------------------------------
+    LoginRequest:
+      type: object
+      required: [organization_code, username, password]
+      properties:
+        organization_code:
+          type: string
+          maxLength: 30
+          description: Unique per Organization — used to scope username uniqueness.
+        username:
+          type: string
+          maxLength: 80
+        password:
+          type: string
+          format: password
+          maxLength: 128
+
+    TokenPairResponse:
+      type: object
+      required: [access_token, refresh_token, expires_in, user, organization_id, branch_scope, branch_ids, issuer, audience, key_id]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in:
+          type: integer
+          description: Access-token lifetime in seconds; token_type usually Bearer.
+          maximum: 86400
+        token_type: { type: string, default: "Bearer" }
+        user: { $ref: "#/components/schemas/UserDto" }
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        branch_scope: { $ref: "#/components/schemas/BranchScope" }
+        branch_ids:
+          type: array
+          description: |
+            Explicit authorized branches for the user. Empty array with
+            branch_scope=ALL implies ALL organization branches.
+          items: { $ref: "#/components/schemas/Uuid" }
+        issuer: { type: string, description: iss value for JWT validation }
+        audience: { type: string, description: aud value for JWT validation }
+        key_id: { type: string, description: kid of the signing key used }
+
+    LoginResponse:
+      allOf:
+        - $ref: "#/components/schemas/TokenPairResponse"
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    LogoutRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string, nullable: true }
+
+    CurrentUserContextDto:
+      type: object
+      required: [user, organization_id, branch_scope, branch_ids, roles, scopes]
+      properties:
+        user: { $ref: "#/components/schemas/UserDto" }
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        organization_code: { type: string }
+        branch_scope: { $ref: "#/components/schemas/BranchScope" }
+        branch_ids:
+          type: array
+          items: { $ref: "#/components/schemas/Uuid" }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/PermissionScope" }
+        runtime: { $ref: "#/components/schemas/RuntimeMode" }
+        issuance_context:
+          type: object
+          description: Extra context headers/metadata supplied by the FE.
+          additionalProperties: true
+
+    # -------------------------------------------------------------------------
+    # Identity
+    # -------------------------------------------------------------------------
+    AddressDto:
+      type: object
+      description: Flattened owned value object (EF address_ prefixed columns)
+      properties:
+        line1: { type: string, maxLength: 200 }
+        line2: { type: string, nullable: true, maxLength: 200 }
+        city: { type: string, maxLength: 100 }
+        region: { type: string, nullable: true, maxLength: 100 }
+        postal_code: { type: string, nullable: true, maxLength: 20 }
+        country_code: { type: string, minLength: 2, maxLength: 2 }
+
+    OrganizationDto:
+      type: object
+      properties:
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        organization_code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 150 }
+        base_currency: { type: string, default: "EGP" }
+        time_zone_id:
+          type: string
+          description: IANA TZ identifier e.g. "Africa/Cairo".
+        address: { $ref: "#/components/schemas/AddressDto" }
+        is_active: { type: boolean }
+
+    CreateOrganizationRequest:
+      type: object
+      required: [organization_code, name, base_currency, time_zone_id, address, branch, admin]
+      properties:
+        organization_code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 150 }
+        base_currency: { type: string, default: "EGP" }
+        time_zone_id: { type: string, description: Validated against IANA registry }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        branch:
+          type: object
+          required: [code, name]
+          properties:
+            code: { type: string, maxLength: 30 }
+            name: { type: string, maxLength: 150 }
+            address: { $ref: "#/components/schemas/AddressDto" }
+        admin:
+          type: object
+          required: [employee_no, full_name, username, password]
+          properties:
+            employee_no: { type: string, maxLength: 30 }
+            full_name: { type: string, maxLength: 150 }
+            username: { type: string, maxLength: 80 }
+            password: { type: string, format: password, maxLength: 128 }
+
+    OrganizationSetupResultDto:
+      type: object
+      properties:
+        organization: { $ref: "#/components/schemas/OrganizationDto" }
+        branch: { $ref: "#/components/schemas/BranchDto" }
+        employee: { $ref: "#/components/schemas/EmployeeDto" }
+        user: { $ref: "#/components/schemas/UserDto" }
+        enrollment_setup_state:
+          type: string
+          enum: [PENDING, ENROLLED, FAILED]
+
+    BranchDto:
+      type: object
+      properties:
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        code: { type: string, description: branch_code }
+        name: { type: string }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        is_active: { type: boolean }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    BranchRequest:
+      type: object
+      required: [code, name, address]
+      properties:
+        code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 150 }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        is_active:
+          type: boolean
+          default: true
+
+    BranchPatchRequest:
+      type: object
+      description: Partial; server validates organization scope.
+      properties:
+        name: { type: string, maxLength: 150 }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        is_active: { type: boolean }
+
+    EnrollmentTokenDto:
+      type: object
+      properties:
+        enrollment_id: { $ref: "#/components/schemas/Uuid" }
+        token:
+          type: string
+          description: Single-use opaque token; only this plain value leaves now (we store hash).
+        expires_at: { $ref: "#/components/schemas/Timestamp" }
+
+    BranchEnrollmentRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string }
+
+    BranchEnrollmentResultDto:
+      type: object
+      properties:
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        runtime_credential:
+          type: string
+          format: password
+        initial_cursor:
+          type: string
+          description: Opaque bootstrap cursor to store in branch-local DB.
+        credential_expires_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    EmployeeDto:
+      type: object
+      properties:
+        employee_id: { $ref: "#/components/schemas/Uuid" }
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        employee_no: { type: string, maxLength: 30 }
+        full_name: { type: string, maxLength: 150 }
+        email: { type: string, nullable: true, format: email, maxLength: 254 }
+        phone: { type: string, nullable: true, maxLength: 30 }
+        job_title: { type: string, nullable: true, maxLength: 80 }
+        hired_on: { type: string, format: date, nullable: true }
+        is_active: { type: boolean }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    EmployeeRequest:
+      type: object
+      required: [branch_id, employee_no, full_name]
+      properties:
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        employee_no: { type: string, maxLength: 30 }
+        full_name: { type: string, maxLength: 150 }
+        email: { type: string, nullable: true, format: email, maxLength: 254 }
+        phone: { type: string, nullable: true, maxLength: 30 }
+        job_title: { type: string, nullable: true, maxLength: 80 }
+
+    EmployeePatchRequest:
+      type: object
+      properties:
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        employee_no: { type: string, maxLength: 30 }
+        full_name: { type: string, maxLength: 150 }
+        email: { type: string, nullable: true, format: email, maxLength: 254 }
+        phone: { type: string, nullable: true, maxLength: 30 }
+        job_title: { type: string, nullable: true, maxLength: 80 }
+        hired_on: { type: string, format: date, nullable: true }
+        is_active: { type: boolean }
+
+    UserDto:
+      type: object
+      properties:
+        user_id: { $ref: "#/components/schemas/Uuid" }
+        employee_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        username: { type: string, maxLength: 80 }
+        role: { $ref: "#/components/schemas/Role" }
+        branch_scope: { $ref: "#/components/schemas/BranchScope" }
+        is_active: { type: boolean }
+        access_failed_count: { type: integer, readOnly: true }
+        lockout_end: { $ref: "#/components/schemas/Timestamp", nullable: true, readOnly: true }
+        last_login_at: { $ref: "#/components/schemas/Timestamp", nullable: true, readOnly: true }
+
+    BranchAccessGrantDto:
+      type: object
+      properties:
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        branch_code: { type: string, readOnly: true }
+
+    CreateUserRequest:
+      type: object
+      required: [employee_id, username, password, role, branch_scope]
+      properties:
+        employee_id:
+          $ref: "#/components/schemas/Uuid"
+        username: { type: string, maxLength: 80 }
+        password: { type: string, format: password, maxLength: 128 }
+        role: { $ref: "#/components/schemas/Role" }
+        branch_scope: { $ref: "#/components/schemas/BranchScope" }
+        branch_access:
+          type: array
+          description: Required only when branch_scope=ASSIGNED.
+          items: { $ref: "#/components/schemas/BranchAccessGrantDto" }
+
+    UserPatchRequest:
+      type: object
+      description: Admin may change role, branch scope/access, and is_active. username unchanged (immutable).
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        branch_scope: { $ref: "#/components/schemas/BranchScope" }
+        branch_access:
+          type: array
+          items: { $ref: "#/components/schemas/BranchAccessGrantDto" }
+        is_active: { type: boolean }
+
+    PasswordResetRequest:
+      type: object
+      required: [new_password]
+      properties:
+        new_password: { type: string, format: password, maxLength: 128 }
+
+    # -------------------------------------------------------------------------
+    # Catalog
+    # -------------------------------------------------------------------------
+    ProductCategoryDto:
+      type: object
+      properties:
+        category_id: { $ref: "#/components/schemas/Uuid" }
+        parent_category_id:
+          $ref: "#/components/schemas/Uuid"
+          nullable: true
+        code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 100 }
+        description: { type: string, nullable: true, maxLength: 250 }
+        is_active: { type: boolean }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    ProductCategoryRequest:
+      type: object
+      required: [code, name]
+      properties:
+        parent_category_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 100 }
+        description: { type: string, nullable: true, maxLength: 250 }
+        is_active: { type: boolean, default: true }
+
+    ProductCategoryPatchRequest:
+      type: object
+      properties:
+        parent_category_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 100 }
+        description: { type: string, nullable: true, maxLength: 250 }
+        is_active: { type: boolean }
+
+    ProductUomDto:
+      type: object
+      properties:
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        uom_code: { type: string, maxLength: 20 }
+        display_name: { type: string, maxLength: 50 }
+        conversion_to_base: { $ref: "#/components/schemas/Numeric6" }
+        sale_unit_price: { $ref: "#/components/schemas/Numeric4", nullable: true }
+        is_base: { type: boolean }
+        is_sellable: { type: boolean }
+        is_purchasable: { type: boolean }
+        is_active: { type: boolean }
+
+    ProductUomRequest:
+      type: object
+      required: [uom_code, display_name, conversion_to_base]
+      properties:
+        uom_code: { type: string, maxLength: 20 }
+        display_name: { type: string, maxLength: 50 }
+        conversion_to_base: { $ref: "#/components/schemas/Numeric6" }
+        sale_unit_price: { $ref: "#/components/schemas/Numeric4", nullable: true }
+        is_base: { type: boolean, default: false }
+        is_sellable: { type: boolean, default: false }
+        is_purchasable: { type: boolean, default: false }
+
+    ProductUomPatchRequest:
+      type: object
+      description: |
+        Permitted non-historical attributes only (conversion_to_base and
+        is_base become immutable once referenced by a posted document or
+        stock). is_active=false to deactivate; never hard delete.
+      properties:
+        display_name: { type: string, maxLength: 50 }
+        sale_unit_price: { $ref: "#/components/schemas/Numeric4", nullable: true }
+        is_sellable: { type: boolean }
+        is_purchasable: { type: boolean }
+        is_active: { type: boolean }
+
+    ProductDto:
+      type: object
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        category_id: { $ref: "#/components/schemas/Uuid" }
+        sku: { type: string, maxLength: 40 }
+        barcode: { type: string, nullable: true, maxLength: 80 }
+        name: { type: string, maxLength: 180 }
+        generic_name: { type: string, nullable: true, maxLength: 180 }
+        brand_name: { type: string, nullable: true, maxLength: 180 }
+        base_uom_code: { type: string, maxLength: 20 }
+        tax_rate: { $ref: "#/components/schemas/TaxRate", description: Fractional 0..1 }
+        image_url: { type: string, nullable: true, maxLength: 300 }
+        lot_tracking_required: { type: boolean }
+        expiry_alert_days: { type: integer, minimum: 0, maximum: 3650 }
+        is_active: { type: boolean }
+        uoms:
+          type: array
+          items: { $ref: "#/components/schemas/ProductUomDto" }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    CreateProductRequest:
+      type: object
+      required: [category_id, sku, name, base_uom_code, uoms]
+      properties:
+        category_id: { $ref: "#/components/schemas/Uuid" }
+        sku: { type: string, maxLength: 40 }
+        barcode: { type: string, nullable: true, maxLength: 80 }
+        name: { type: string, maxLength: 180 }
+        generic_name: { type: string, nullable: true, maxLength: 180 }
+        brand_name: { type: string, nullable: true, maxLength: 180 }
+        base_uom_code: { type: string, maxLength: 20 }
+        tax_rate: { $ref: "#/components/schemas/TaxRate", default: "0.0000" }
+        image_url: { type: string, nullable: true, maxLength: 300 }
+        lot_tracking_required: { type: boolean, default: false }
+        expiry_alert_days: { type: integer, default: 0, minimum: 0, maximum: 3650 }
+        uoms:
+          type: array
+          description: Must include exactly one is_base=true entry with conversion_to_base=1.
+          items: { $ref: "#/components/schemas/ProductUomRequest" }
+
+    ProductPatchRequest:
+      type: object
+      properties:
+        category_id: { $ref: "#/components/schemas/Uuid" }
+        barcode: { type: string, nullable: true, maxLength: 80 }
+        name: { type: string, maxLength: 180 }
+        generic_name: { type: string, nullable: true, maxLength: 180 }
+        brand_name: { type: string, nullable: true, maxLength: 180 }
+        tax_rate: { $ref: "#/components/schemas/TaxRate" }
+        image_url: { type: string, nullable: true, maxLength: 300 }
+        lot_tracking_required: { type: boolean, description: Cannot change while stock or posted ledger history exists. }
+        expiry_alert_days: { type: integer, minimum: 0, maximum: 3650 }
+        is_active: { type: boolean }
+
+    ReorderRuleDto:
+      type: object
+      properties:
+        reorder_rule_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        reorder_point_base: { $ref: "#/components/schemas/Numeric4" }
+        reorder_quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        max_quantity_base: { $ref: "#/components/schemas/Numeric4", nullable: true }
+        is_active: { type: boolean }
+
+    ReorderRuleRequest:
+      type: object
+      required: [product_id, branch_id, reorder_point_base, reorder_quantity_base]
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        reorder_point_base: { $ref: "#/components/schemas/Numeric4" }
+        reorder_quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        max_quantity_base: { $ref: "#/components/schemas/Numeric4", nullable: true }
+        is_active: { type: boolean, default: true }
+
+    # -------------------------------------------------------------------------
+    # Inventory
+    # -------------------------------------------------------------------------
+    LocationType:
+      type: string
+      enum: [SELLABLE, QUARANTINE, DAMAGED, SCRAP]
+      description: >
+        Only SELLABLE location_type may have is_sellable=true.
+        DAMAGED / QUARANTINE / SCRAP are always is_sellable=false.
+
+    BatchQualityStatus:
+      type: string
+      enum: [AVAILABLE, QUARANTINED, EXPIRED, RECALLED]
+      description: >
+        Availability for sale further requires non-expired-by-date and an
+        eligible SELLABLE location; the current date-eligibility check is
+        independently evaluated even if stored quality value hasn't refreshed.
+
+    InventoryLocationDto:
+      type: object
+      properties:
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        location_code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 100 }
+        location_type: { $ref: "#/components/schemas/LocationType" }
+        is_sellable: { type: boolean }
+        is_active: { type: boolean }
+
+    InventoryLocationRequest:
+      type: object
+      required: [branch_id, location_code, name, location_type]
+      properties:
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        location_code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 100 }
+        location_type: { $ref: "#/components/schemas/LocationType" }
+        is_active: { type: boolean, default: true }
+
+    InventoryLocationPatchRequest:
+      type: object
+      properties:
+        name: { type: string, maxLength: 100 }
+        location_type: { $ref: "#/components/schemas/LocationType" }
+        is_active: { type: boolean }
+
+    InventoryBatchDto:
+      type: object
+      properties:
+        batch_id: { $ref: "#/components/schemas/Uuid", description: Deterministic UUIDv5; identical across branches }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        batch_number: { type: string, maxLength: 80, description: Exact, case-sensitive }
+        manufactured_on: { type: string, format: date, nullable: true }
+        expires_on: { type: string, format: date, nullable: true }
+        quality_status: { $ref: "#/components/schemas/BatchQualityStatus" }
+        is_non_lot:
+          type: boolean
+          readOnly: true
+          description: True for reserved batch_number=NON-LOT with NULL dates.
+
+    InventoryBalanceDto:
+      type: object
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id: { $ref: "#/components/schemas/Uuid" }
+        on_hand_qty_base: { $ref: "#/components/schemas/Numeric4", description: Always >= 0 }
+        average_unit_cost: { $ref: "#/components/schemas/Numeric4" }
+        available_qty_base:
+          $ref: "#/components/schemas/Numeric4"
+          description: Server-derived eligible (sellable location + acceptable quality/expiry); equals on_hand in MVP (no reservations).
+        row_version:
+          type: integer
+          format: int64
+          readOnly: true
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    InventoryTxnType:
+      type: string
+      enum:
+        - OPENING_BALANCE
+        - ADJUSTMENT_IN
+        - ADJUSTMENT_OUT
+        - SALE_ISSUE
+        - SALES_RETURN_IN
+        - PURCHASE_RECEIPT
+        - VENDOR_RETURN_OUT
+        - SCRAP_OUT
+        - REVERSAL
+      description: >
+        Posted sign: positive for IN/receipt types (OPENING_BALANCE,
+        ADJUSTMENT_IN, SALES_RETURN_IN, PURCHASE_RECEIPT) and negative for
+        ISSUE/OUT types (SALE_ISSUE, VENDOR_RETURN_OUT, SCRAP_OUT,
+        ADJUSTMENT_OUT). Reversal exactly negates its original.
+
+    InventoryTxnStatus:
+      type: string
+      enum: [DRAFT, POSTED, CANCELLED]
+      description: POSTED rows/lines immutable; CANCELLED only for unposted drafts.
+
+    InventoryTxnLineDto:
+      type: object
+      properties:
+        inventory_txn_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id:
+          $ref: "#/components/schemas/Uuid"
+          description: Product's base UOM for ledger lines.
+        entered_qty: { $ref: "#/components/schemas/Numeric4" }
+        conversion_snapshot: { $ref: "#/components/schemas/Numeric6" }
+        quantity_delta_base: { $ref: "#/components/schemas/Numeric4", description: Signed; never 0. }
+        unit_cost_base: { $ref: "#/components/schemas/Numeric4", nullable: true }
+        sales_order_line_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        sales_return_line_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        purchase_order_line_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        vendor_return_line_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+
+    InventoryTxnDto:
+      type: object
+      properties:
+        inventory_txn_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        transaction_no: { type: string, maxLength: 40 }
+        transaction_type: { $ref: "#/components/schemas/InventoryTxnType" }
+        status: { $ref: "#/components/schemas/InventoryTxnStatus" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+        note: { type: string, nullable: true, maxLength: 500 }
+        posted_at: { $ref: "#/components/schemas/Timestamp", nullable: true }
+        created_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        reverses_inventory_txn_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        sales_order_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        sales_return_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        purchase_order_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        vendor_return_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/InventoryTxnLineDto" }
+
+    InventoryTxnRequest:
+      type: object
+      required: [transaction_type, branch_id, lines]
+      properties:
+        transaction_type:
+          allOf:
+            - $ref: "#/components/schemas/InventoryTxnType"
+          description: For /inventory/adjustments this is OPENING_BALANCE, ADJUSTMENT_IN, ADJUSTMENT_OUT, or REVERSAL.
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+        note: { type: string, nullable: true, maxLength: 500 }
+        reverses_inventory_txn_id:
+          $ref: "#/components/schemas/Uuid"
+          nullable: true
+          description: Required when transaction_type=REVERSAL.
+        location_id_override:
+          $ref: "#/components/schemas/Uuid"
+          nullable: true
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/InventoryTxnLineRequest" }
+
+    InventoryTxnLineRequest:
+      type: object
+      required: [product_id, location_id, batch_id, entered_qty, product_uom_id]
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id:
+          $ref: "#/components/schemas/Uuid"
+          description: "
+            For non-lot-tracked products use the system NON-LOT batch row.
+          "
+        product_uom_id:
+          $ref: "#/components/schemas/Uuid"
+          description: Typically the product's base UOM; conversion must be >0.
+        entered_qty: { $ref: "#/components/schemas/Numeric4" }
+        unit_cost_base:
+          $ref: "#/components/schemas/Numeric4"
+          nullable: true
+          description: >
+            Required for ADJUSTMENT_IN / OPENING_BALANCE; server uses current
+            balance cost for ADJUSTMENT_OUT and reversals.
+
+    # -------------------------------------------------------------------------
+    # Sales (Stage 2, BranchLocal)
+    # -------------------------------------------------------------------------
+    SalesOrderStatus:
+      type: string
+      enum: [DRAFT, COMPLETED, CANCELLED]
+
+    SalesOrderLineDto:
+      type: object
+      properties:
+        order_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        entered_qty: { $ref: "#/components/schemas/Numeric4" }
+        conversion_snapshot: { $ref: "#/components/schemas/Numeric6" }
+        quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        unit_price_snapshot: { $ref: "#/components/schemas/Numeric4" }
+        discount_amount: { $ref: "#/components/schemas/Money", description: Always 0 for MVP }
+        tax_rate_snapshot: { $ref: "#/components/schemas/TaxRate" }
+        tax_amount_snapshot: { $ref: "#/components/schemas/Money" }
+        line_total: { $ref: "#/components/schemas/Money" }
+
+    SalesOrderDto:
+      type: object
+      properties:
+        sales_order_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        created_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        order_no: { type: string }
+        channel: { type: string, default: "POS" }
+        order_status: { $ref: "#/components/schemas/SalesOrderStatus" }
+        currency_code: { type: string, description: equals Organization base_currency }
+        estimated_subtotal: { $ref: "#/components/schemas/Money" }
+        estimated_tax_total: { $ref: "#/components/schemas/Money" }
+        estimated_grand_total: { $ref: "#/components/schemas/Money" }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        completed_at: { $ref: "#/components/schemas/Timestamp", nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/SalesOrderLineDto" }
+
+    CreateSalesOrderRequest:
+      type: object
+      required: [branch_id, lines]
+      description: |
+        FE provides only product identification and quantity. Price, tax,
+        discount, and totals are server-calculated from PRODUCT_UOM and
+        PRODUCT tax baselines — never authoritative from the FE.
+      properties:
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/SalesOrderLineRequest" }
+
+    SalesOrderLineRequest:
+      type: object
+      required: [product_id, product_uom_id, entered_qty]
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        entered_qty: { $ref: "#/components/schemas/Numeric4" }
+
+    SalesOrderLinesRequest:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/SalesOrderLineRequest" }
+
+    CompleteSalesOrderRequest:
+      type: object
+      required: [cash_tendered_amount, method]
+      description: |
+        Server recomputes totals from line snapshots. Must satisfy
+        cash_tendered >= payable amount; change = tendered - due >= 0.
+        Cashier full payment only; partial/credit rejected.
+      properties:
+        cash_tendered_amount: { $ref: "#/components/schemas/Money" }
+        method:
+          type: string
+          enum: [CASH]
+
+    CompleteSalesOrderResultDto:
+      type: object
+      properties:
+        sales_order: { $ref: "#/components/schemas/SalesOrderDto" }
+        invoice: { $ref: "#/components/schemas/SalesInvoiceDto" }
+        payment:
+          $ref: "#/components/schemas/SalesPaymentDto"
+        inventory_txn:
+          $ref: "#/components/schemas/InventoryTxnDto"
+
+    SalesInvoiceStatus:
+      type: string
+      enum: [ISSUED]
+
+    SalesInvoicePaymentStatus:
+      type: string
+      enum: [PAID, PARTIALLY_REFUNDED, REFUNDED]
+
+    SalesInvoiceLineDto:
+      type: object
+      properties:
+        invoice_line_id: { $ref: "#/components/schemas/Uuid" }
+        source_order_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        entered_qty: { $ref: "#/components/schemas/Numeric4" }
+        conversion_snapshot: { $ref: "#/components/schemas/Numeric6" }
+        quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        unit_price_snapshot: { $ref: "#/components/schemas/Numeric4" }
+        discount_amount: { $ref: "#/components/schemas/Money" }
+        tax_rate_snapshot: { $ref: "#/components/schemas/TaxRate" }
+        tax_amount_snapshot: { $ref: "#/components/schemas/Money" }
+        net_amount: { $ref: "#/components/schemas/Money" }
+        line_total: { $ref: "#/components/schemas/Money", description: tax-inclusive }
+        unit_cost_snapshot: { $ref: "#/components/schemas/Numeric4" }
+
+    SalesInvoiceDto:
+      type: object
+      properties:
+        invoice_id: { $ref: "#/components/schemas/Uuid" }
+        sales_order_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        invoice_no: { type: string, maxLength: 40 }
+        status: { $ref: "#/components/schemas/SalesInvoiceStatus" }
+        currency_code: { type: string }
+        subtotal: { $ref: "#/components/schemas/Money" }
+        discount_total: { $ref: "#/components/schemas/Money" }
+        tax_total: { $ref: "#/components/schemas/Money" }
+        grand_total: { $ref: "#/components/schemas/Money" }
+        paid_amount: { $ref: "#/components/schemas/Money" }
+        refunded_amount: { $ref: "#/components/schemas/Money" }
+        payment_status: { $ref: "#/components/schemas/SalesInvoicePaymentStatus" }
+        issued_at: { $ref: "#/components/schemas/Timestamp" }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/SalesInvoiceLineDto" }
+        payments:
+          type: array
+          description: Linked cash payments
+          items: { $ref: "#/components/schemas/SalesPaymentDto" }
+        returns_summary:
+          type: array
+          items: { $ref: "#/components/schemas/SalesReturnDto" }
+
+    SalesPaymentDto:
+      type: object
+      properties:
+        payment_id: { $ref: "#/components/schemas/Uuid" }
+        invoice_id: { $ref: "#/components/schemas/Uuid" }
+        amount_due: { $ref: "#/components/schemas/Money" }
+        cash_tendered_amount: { $ref: "#/components/schemas/Money" }
+        change_amount: { $ref: "#/components/schemas/Money" }
+        method: { type: string, enum: [CASH] }
+        received_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        paid_at: { $ref: "#/components/schemas/Timestamp" }
+
+    ReturnDisposition:
+      type: string
+      enum: [RESTOCK, QUARANTINE, SCRAP]
+
+    SalesReturnStatus:
+      type: string
+      enum: [DRAFT, POSTED, CANCELLED]
+
+    SalesRefundStatus:
+      type: string
+      enum: [NOT_REFUNDED, PARTIALLY_REFUNDED, REFUNDED]
+
+    SalesReturnLineDto:
+      type: object
+      properties:
+        return_line_id: { $ref: "#/components/schemas/Uuid" }
+        invoice_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id: { $ref: "#/components/schemas/Uuid", description: Server-derived from original sale }
+        destination_location_id:
+          $ref: "#/components/schemas/Uuid"
+          description: Server-selected; callers do not choose.
+        quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        refund_amount: { $ref: "#/components/schemas/Money" }
+        disposition: { $ref: "#/components/schemas/ReturnDisposition" }
+
+    SalesReturnDto:
+      type: object
+      properties:
+        return_id: { $ref: "#/components/schemas/Uuid" }
+        invoice_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        return_no: { type: string, maxLength: 40 }
+        status: { $ref: "#/components/schemas/SalesReturnStatus" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+        refund_amount: { $ref: "#/components/schemas/Money" }
+        refund_status: { $ref: "#/components/schemas/SalesRefundStatus" }
+        received_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        approved_by_employee_id: { $ref: "#/components/schemas/Uuid", nullable: true }
+        received_at: { $ref: "#/components/schemas/Timestamp" }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/SalesReturnLineDto" }
+        inventory_txn:
+          $ref: "#/components/schemas/InventoryTxnDto"
+        refund:
+          $ref: "#/components/schemas/SalesRefundDto"
+
+    SalesRefundDto:
+      type: object
+      properties:
+        refund_id: { $ref: "#/components/schemas/Uuid" }
+        sales_return_id: { $ref: "#/components/schemas/Uuid" }
+        invoice_id: { $ref: "#/components/schemas/Uuid" }
+        amount: { $ref: "#/components/schemas/Money" }
+        method: { type: string, enum: [CASH] }
+        processed_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        refunded_at: { $ref: "#/components/schemas/Timestamp" }
+
+    SalesReturnRequest:
+      type: object
+      required: [invoice_id, reason_code, lines, disposition]
+      properties:
+        invoice_id: { $ref: "#/components/schemas/Uuid" }
+        reason_code: { type: string, maxLength: 40 }
+        approved_by_employee_id:
+          $ref: "#/components/schemas/Uuid"
+          nullable: true
+          description: |
+            Optional; if supplied, must be a different active Admin/Pharmacist
+            with authorization at the invoice branch, and not the cashier.
+            When omitted, server records pending/posted per backend policy.
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/SalesReturnLineRequest" }
+        refund_requested:
+          type: boolean
+          default: true
+
+    SalesReturnLineRequest:
+      type: object
+      required: [invoice_line_id, quantity_base, disposition]
+      properties:
+        invoice_line_id: { $ref: "#/components/schemas/Uuid" }
+        quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        disposition: { $ref: "#/components/schemas/ReturnDisposition" }
+
+    # -------------------------------------------------------------------------
+    # Purchasing (Stage 3)
+    # -------------------------------------------------------------------------
+    SupplierDto:
+      type: object
+      properties:
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        supplier_code: { type: string, maxLength: 30 }
+        legal_name: { type: string, maxLength: 180 }
+        tax_registration_number: { type: string, nullable: true, maxLength: 60 }
+        contact_email: { type: string, nullable: true, format: email, maxLength: 254 }
+        phone: { type: string, nullable: true, maxLength: 30 }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        default_lead_time_days: { type: integer, minimum: 0 }
+        is_active: { type: boolean }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    CreateSupplierRequest:
+      type: object
+      required: [supplier_code, legal_name, address]
+      properties:
+        supplier_code: { type: string, maxLength: 30 }
+        legal_name: { type: string, maxLength: 180 }
+        tax_registration_number: { type: string, nullable: true, maxLength: 60 }
+        contact_email: { type: string, nullable: true, format: email, maxLength: 254 }
+        phone: { type: string, nullable: true, maxLength: 30 }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        default_lead_time_days: { type: integer, default: 0, minimum: 0 }
+        is_active: { type: boolean, default: true }
+
+    SupplierPatchRequest:
+      type: object
+      properties:
+        legal_name: { type: string, maxLength: 180 }
+        tax_registration_number: { type: string, nullable: true, maxLength: 60 }
+        contact_email: { type: string, nullable: true, format: email, maxLength: 254 }
+        phone: { type: string, nullable: true, maxLength: 30 }
+        address: { $ref: "#/components/schemas/AddressDto" }
+        default_lead_time_days: { type: integer, minimum: 0 }
+
+    SupplierStatusPatchRequest:
+      type: object
+      required: [is_active]
+      properties:
+        is_active: { type: boolean }
+
+    PurchaseOrderStatus:
+      type: string
+      enum: [DRAFT, APPROVED, ORDERED, PARTIALLY_RECEIVED, RECEIVED, CLOSED, CANCELLED]
+
+    PurchaseOrderPaymentStatus:
+      type: string
+      enum: [UNPAID, PARTIALLY_PAID, PAID]
+
+    PurchaseOrderLineDto:
+      type: object
+      properties:
+        po_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        entered_ordered_qty: { $ref: "#/components/schemas/Numeric4" }
+        conversion_snapshot: { $ref: "#/components/schemas/Numeric6" }
+        ordered_qty_base: { $ref: "#/components/schemas/Numeric4" }
+        received_qty_base:
+          $ref: "#/components/schemas/Numeric4"
+          description: cumulative accepted quantity only (rejected excluded)
+        rejected_qty_base: { $ref: "#/components/schemas/Numeric4" }
+        cancelled_qty_base: { $ref: "#/components/schemas/Numeric4" }
+        remaining_qty_base:
+          $ref: "#/components/schemas/Numeric4"
+          readOnly: true
+          description: ordered - accepted - cancelled
+        unit_cost_entered: { $ref: "#/components/schemas/Numeric4" }
+        unit_cost_base: { $ref: "#/components/schemas/Numeric4" }
+        discount_amount: { $ref: "#/components/schemas/Money" }
+        tax_rate_snapshot: { $ref: "#/components/schemas/TaxRate" }
+        tax_amount: { $ref: "#/components/schemas/Money" }
+        line_total: { $ref: "#/components/schemas/Money", description: line net, tax-exclusive }
+        allocated_additional_cost: { $ref: "#/components/schemas/Money" }
+        min_remaining_shelf_days: { type: integer, minimum: 0, default: 90 }
+
+    PurchaseOrderDto:
+      type: object
+      properties:
+        purchase_order_id: { $ref: "#/components/schemas/Uuid" }
+        po_no: { type: string, maxLength: 40 }
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        created_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        status: { $ref: "#/components/schemas/PurchaseOrderStatus" }
+        expected_on: { type: string, format: date, nullable: true }
+        currency_code: { type: string }
+        subtotal: { $ref: "#/components/schemas/Money" }
+        tax_total: { $ref: "#/components/schemas/Money" }
+        additional_costs: { $ref: "#/components/schemas/Money" }
+        total_amount: { $ref: "#/components/schemas/Money" }
+        paid_amount: { $ref: "#/components/schemas/Money" }
+        outstanding_amount:
+          $ref: "#/components/schemas/Money"
+          readOnly: true
+          description: total - paid
+        payment_status: { $ref: "#/components/schemas/PurchaseOrderPaymentStatus" }
+        ordered_at: { $ref: "#/components/schemas/Timestamp", nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/PurchaseOrderLineDto" }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+
+    PurchaseOrderLineRequest:
+      type: object
+      required: [product_id, product_uom_id, entered_ordered_qty, unit_cost_entered]
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        entered_ordered_qty: { $ref: "#/components/schemas/Numeric4" }
+        unit_cost_entered: { $ref: "#/components/schemas/Numeric4" }
+        discount_amount: { $ref: "#/components/schemas/Money", default: "0.00" }
+        tax_rate_snapshot: { $ref: "#/components/schemas/TaxRate", nullable: true, description: Defaults to PRODUCT.tax_rate at server }
+        min_remaining_shelf_days: { type: integer, minimum: 0, default: 90 }
+
+    CreatePurchaseOrderRequest:
+      type: object
+      required: [supplier_id, branch_id, currency_code, lines]
+      properties:
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        expected_on: { type: string, format: date, nullable: true }
+        currency_code: { type: string, description: must equal organization base_currency }
+        additional_costs:
+          type: string
+          description: optional header additional cost to be pro-rata allocated at create
+          $ref: "#/components/schemas/Money"
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/PurchaseOrderLineRequest" }
+
+    PurchaseOrderPatchRequest:
+      type: object
+      description: DRAFT-only edit
+      properties:
+        expected_on: { type: string, format: date, nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/PurchaseOrderLineRequest" }
+
+    CancelPurchaseOrderRequest:
+      type: object
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, maxLength: 40 }
+        note: { type: string, nullable: true, maxLength: 500 }
+
+    CancelPurchaseOrderRemainingRequest:
+      type: object
+      required: [reason_code]
+      description: |
+        BranchLocal-only cancellation of the PO's remaining uncancelled
+        quantity. On success when no uncancelled quantity remains, the PO
+        transitions to CLOSED and a CANCEL_REMAINING_PURCHASE_ORDER fact
+        synchronizes to cloud.
+      properties:
+        reason_code: { type: string, maxLength: 40 }
+        note: { type: string, nullable: true, maxLength: 500 }
+
+    OrderPurchaseOrderRequest:
+      type: object
+      description: Empty request; marks ordered/sent.
+      properties: {}
+
+    ReceivePurchaseOrderRequest:
+      type: object
+      required: [location_id, received_on, lines]
+      properties:
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        received_on: { type: string, format: date }
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ReceiveLineRequest" }
+
+    ReceiveLineRequest:
+      type: object
+      required: [po_line_id, product_id, product_uom_id, received_qty_base]
+      description: |
+        received_qty_base = accepted_qty_base + rejected_qty_base
+        accepted quantity accumulates to PO received_qty_base; rejected
+        quantity stays replaceable/cancellable; batch supplied per line.
+      properties:
+        po_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        product_uom_id: { $ref: "#/components/schemas/Uuid" }
+        received_qty_base: { $ref: "#/components/schemas/Numeric4", description: accepted + rejected }
+        accepted_qty_base: { $ref: "#/components/schemas/Numeric4" }
+        rejected_qty_base: { $ref: "#/components/schemas/Numeric4", default: "0.0000" }
+        batch_number: { type: string, maxLength: 80, nullable: false }
+        manufactured_on: { type: string, format: date, nullable: true }
+        expires_on: { type: string, format: date, nullable: true }
+        override_reason:
+          type: string
+          nullable: true
+          description: Required for authorized shelf-life exception.
+
+    PurchaseReceiptResultDto:
+      type: object
+      properties:
+        inventory_txn_id: { $ref: "#/components/schemas/Uuid" }
+        purchase_order_status: { $ref: "#/components/schemas/PurchaseOrderStatus" }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              po_line_id: { $ref: "#/components/schemas/Uuid" }
+              product_id: { $ref: "#/components/schemas/Uuid" }
+              accepted_qty_base: { $ref: "#/components/schemas/Numeric4" }
+              rejected_qty_base: { $ref: "#/components/schemas/Numeric4" }
+              remaining_qty_base: { $ref: "#/components/schemas/Numeric4" }
+              batch_id: { $ref: "#/components/schemas/Uuid" }
+              created_at: { $ref: "#/components/schemas/Timestamp" }
+        trace_id: { type: string }
+
+    RecordSupplierPaymentRequest:
+      type: object
+      required: [supplier_id, purchase_order_id, amount, currency_code, method]
+      description: |
+        Posts a SupplierPayment and updates PO paid_amount / payment_status
+        atomically in the same transaction. Currency must match PO.
+      properties:
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        purchase_order_id: { $ref: "#/components/schemas/Uuid" }
+        amount: { $ref: "#/components/schemas/Money", description: >0 and <= outstanding }
+        currency_code: { type: string }
+        method: { type: string, enum: [CASH] }
+        payment_reference: { type: string, nullable: true, maxLength: 100 }
+        note: { type: string, nullable: true, maxLength: 250 }
+
+    SupplierPaymentDto:
+      type: object
+      properties:
+        supplier_payment_id: { $ref: "#/components/schemas/Uuid" }
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        purchase_order_id: { $ref: "#/components/schemas/Uuid" }
+        amount: { $ref: "#/components/schemas/Money" }
+        currency_code: { type: string }
+        method: { type: string, enum: [CASH] }
+        payment_reference: { type: string, nullable: true }
+        note: { type: string, nullable: true }
+        paid_at: { $ref: "#/components/schemas/Timestamp" }
+        recorded_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        po_paid_amount: { $ref: "#/components/schemas/Money" }
+        po_outstanding_amount: { $ref: "#/components/schemas/Money" }
+        po_payment_status: { $ref: "#/components/schemas/PurchaseOrderPaymentStatus" }
+
+    VendorReturnStatus:
+      type: string
+      enum: [DRAFT, POSTED, CANCELLED]
+
+    VendorReturnLineDto:
+      type: object
+      properties:
+        vendor_return_line_id: { $ref: "#/components/schemas/Uuid" }
+        purchase_order_line_id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id: { $ref: "#/components/schemas/Uuid" }
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        quantity_base: { $ref: "#/components/schemas/Numeric4", description: >0 }
+        unit_cost_snapshot: { $ref: "#/components/schemas/Numeric4" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+
+    VendorReturnDto:
+      type: object
+      properties:
+        vendor_return_id: { $ref: "#/components/schemas/Uuid" }
+        return_no: { type: string, maxLength: 40 }
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        created_by_employee_id: { $ref: "#/components/schemas/Uuid" }
+        status: { $ref: "#/components/schemas/VendorReturnStatus" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+        note: { type: string, nullable: true, maxLength: 500 }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        posted_at: { $ref: "#/components/schemas/Timestamp", nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/VendorReturnLineDto" }
+        inventory_txn: { $ref: "#/components/schemas/InventoryTxnDto", nullable: true }
+
+    CreateVendorReturnRequest:
+      type: object
+      required: [supplier_id, branch_id, lines]
+      properties:
+        supplier_id: { $ref: "#/components/schemas/Uuid" }
+        branch_id: { $ref: "#/components/schemas/Uuid" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+        note: { type: string, nullable: true, maxLength: 500 }
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/VendorReturnLineRequest" }
+
+    VendorReturnLineRequest:
+      type: object
+      required: [purchase_order_line_id, batch_id, location_id, quantity_base]
+      properties:
+        purchase_order_line_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id: { $ref: "#/components/schemas/Uuid" }
+        location_id: { $ref: "#/components/schemas/Uuid" }
+        quantity_base: { $ref: "#/components/schemas/Numeric4" }
+        reason_code: { type: string, nullable: true, maxLength: 40 }
+
+    # -------------------------------------------------------------------------
+    # Paged specialized (items + nextCursor pattern)
+    # -------------------------------------------------------------------------
+    PagedBranchDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/BranchDto" }
+
+    PagedUserDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/UserDto" }
+
+    PagedEmployeeDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/EmployeeDto" }
+
+    PagedProductCategoryDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/ProductCategoryDto" }
+
+    PagedProductDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/ProductDto" }
+
+    PagedInventoryLocationDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/InventoryLocationDto" }
+
+    PagedInventoryBatchDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/InventoryBatchDto" }
+
+    PagedInventoryBalanceDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/InventoryBalanceDto" }
+
+    PagedInventoryTxnDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/InventoryTxnDto" }
+
+    PagedSalesOrderDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/SalesOrderDto" }
+
+    PagedSalesInvoiceDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/SalesInvoiceDto" }
+
+    PagedSalesReturnDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/SalesReturnDto" }
+
+    PagedSupplierDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/SupplierDto" }
+
+    PagedPurchaseOrderDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/PurchaseOrderDto" }
+
+    PagedVendorReturnDto:
+      allOf:
+        - $ref: "#/components/schemas/PagedResult"
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/VendorReturnDto" }

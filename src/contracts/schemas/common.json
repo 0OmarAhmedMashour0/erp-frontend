@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/schemas/common.json",
+  "title": "Pharmacy ERP — Shared Contract Primitives",
+  "description": "Shared scalar conventions and envelopes used across all domain schemas. Mirrors openapi.erp.yaml components.",
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Money": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,16}(\\.[0-9]{1,2})?$",
+      "description": "numeric(18,2) as fixed-2 decimal string. Money MUST NOT be represented as IEEE-754 floats on the FE."
+    },
+    "Numeric4": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,14}(\\.[0-9]{1,4})?$",
+      "description": "numeric(18,4) as fixed-4 decimal string (quantities, unit costs)."
+    },
+    "Numeric6": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+      "description": "numeric(18,6) as fixed-6 decimal string (UOM conversion factors)."
+    },
+    "TaxRate": {
+      "type": "string",
+      "pattern": "^(0|0\\.[0-9]{1,4}|1(\\.0{1,4})?)$",
+      "description": "Fractional tax rate numeric(9,4): \"0.1400\" = 14%. Rates are NOT percent integers."
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamptz ISO 8601 (suffix Z)."
+    },
+    "Role": {
+      "type": "string",
+      "enum": ["Admin", "Pharmacist", "Cashier"],
+      "description": "Case-sensitive closed set persisted in USER_ACCOUNT.role."
+    },
+    "BranchScope": {
+      "type": "string",
+      "enum": ["ALL", "ASSIGNED"],
+      "description": "ALL is permitted only for an organization Admin (DB CHECK enforced)."
+    },
+    "PermissionScope": {
+      "type": "string",
+      "enum": [
+        "inventory:read",
+        "inventory:write",
+        "sales:read",
+        "sales:write",
+        "return:read",
+        "return:write",
+        "purchase-order:read",
+        "purchase-order:draft",
+        "purchase-order:approve",
+        "purchase-order:receive",
+        "supplier-payment:write",
+        "sync:retry",
+        "user:admin"
+      ]
+    },
+    "RuntimeMode": {
+      "type": "string",
+      "enum": ["Cloud", "BranchLocal"]
+    },
+    "AddressDto": {
+      "type": "object",
+      "description": "Owned value object, flattened with address_ prefixes on the owner table.",
+      "properties": {
+        "line1": { "type": "string", "maxLength": 200 },
+        "line2": { "type": ["string", "null"], "maxLength": 200 },
+        "city": { "type": "string", "maxLength": 100 },
+        "region": { "type": ["string", "null"], "maxLength": 100 },
+        "postal_code": { "type": ["string", "null"], "maxLength": 20 },
+        "country_code": { "type": "string", "minLength": 2, "maxLength": 2 }
+      },
+      "required": ["line1", "city", "country_code"]
+    },
+    "ErrorDetail": {
+      "type": "object",
+      "properties": {
+        "field": { "type": "string", "description": "JSON path e.g. \"lines[0].quantity\"" },
+        "issue": { "type": "string" }
+      }
+    },
+    "ErrorCode": {
+      "type": "string",
+      "description": "Each code maps to exactly one HTTP status.",
+      "enum": [
+        "MALFORMED_REQUEST",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "FORBIDDEN_BRANCH",
+        "NOT_FOUND",
+        "CONFLICT",
+        "INVALID_STATE_TRANSITION",
+        "OUT_OF_STOCK",
+        "IDEMPOTENCY_MISMATCH",
+        "VALIDATION_ERROR",
+        "EXPIRY_POLICY_VIOLATION",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "ApiError": {
+      "type": "object",
+      "title": "Standard API Error Envelope",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "$ref": "#/$defs/ErrorCode" },
+            "message": { "type": "string", "description": "Human-readable; safe to display." },
+            "details": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ErrorDetail" }
+            },
+            "trace_id": { "type": "string", "description": "Matches the W3C traceparent propagated in the call." }
+          }
+        }
+      }
+    },
+    "PagedResult": {
+      "type": "object",
+      "title": "Pagination envelope — one shape for every list endpoint",
+      "required": ["items", "nextCursor"],
+      "properties": {
+        "items": { "type": "array" },
+        "nextCursor": {
+          "type": ["string", "null"],
+          "maxLength": 500,
+          "description": "Opaque continuation cursor; null = end of results. Page size via `limit` (default 50, max 200)."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "organization_id": "b1c2d3e4-2222-4b33-8c44-aabbccddeeff",
+  "organization_code": "PHARMAPLUS",
+  "name": "PharmaPlus Pharmacies",
+  "base_currency": "EGP",
+  "time_zone_id": "Africa/Cairo",
+  "address": {
+    "line1": "1 Corniche El Nil, Nile Tower",
+    "line2": "Floor 8",
+    "city": "Cairo",
+    "region": "Cairo",
+    "postal_code": "11611",
+    "country_code": "EG"
+  },
+  "is_active": true,
+  "created_at": "2025-06-01T09:00:00Z",
+  "updated_at": "2026-09-28T11:20:00Z"
+}

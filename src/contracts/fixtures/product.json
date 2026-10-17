@@ -1,0 +1,52 @@
+{
+  "product_id": "e5f6a7b8-3333-4ddd-8b2c-34567890abc1",
+  "category_id": "c9d8e7f6-4444-4d55-8e66-cbccddeeffbb",
+  "sku": "ANA-PCM-500-TAB",
+  "barcode": "6221048001234",
+  "name": "Panadol 500mg Tablets",
+  "generic_name": "Paracetamol 500mg",
+  "brand_name": "Panadol",
+  "base_uom_code": "tablet",
+  "tax_rate": "0.1400",
+  "image_url": "https://cdn.pharmaplus.eg/products/ana-pcm-500-tab.jpg",
+  "lot_tracking_required": false,
+  "expiry_alert_days": 30,
+  "is_active": true,
+  "uoms": [
+    {
+      "product_uom_id": "f1a2b3c4-0101-4fff-8a1b-56789012abcd",
+      "uom_code": "tablet",
+      "display_name": "Tablet (base)",
+      "conversion_to_base": "1.000000",
+      "sale_unit_price": "1.2500",
+      "is_base": true,
+      "is_sellable": true,
+      "is_purchasable": false,
+      "is_active": true
+    },
+    {
+      "product_uom_id": "a2b3c4d5-0202-4aaa-8b2c-67890123bcde",
+      "uom_code": "strip",
+      "display_name": "Strip of 10",
+      "conversion_to_base": "10.000000",
+      "sale_unit_price": "12.0000",
+      "is_base": false,
+      "is_sellable": true,
+      "is_purchasable": false,
+      "is_active": true
+    },
+    {
+      "product_uom_id": "b3c4d5e6-0303-4bbb-9c3d-78901234cdef",
+      "uom_code": "box",
+      "display_name": "Box of 100",
+      "conversion_to_base": "100.000000",
+      "sale_unit_price": "118.0000",
+      "is_base": false,
+      "is_sellable": true,
+      "is_purchasable": true,
+      "is_active": true
+    }
+  ],
+  "created_at": "2025-08-15T10:00:00Z",
+  "updated_at": "2026-10-02T08:30:00Z"
+}

@@ -1,16 +1,62 @@
 {
-  "schema": "canonical.PurchaseOrder",
-  "version": "1.0",
-  "supplier_id": "8a1e9c20-1b2c-4d3e-8f9a-000000000001",
+  "purchase_order_id": "ae973d40-a0a0-4b40-8f7a-6f7a8b9cac19",
+  "po_no": "PO-2026-000118",
+  "supplier_id": "fd8a71c2-5555-4a11-8b1c-8e8ea4a4b0c1",
+  "branch_id": "d4e5f6a7-3333-4c44-9d55-bbccddeeffaa",
+  "created_by_employee_id": "fa567890-1234-4def-9fbe-fa12345678de",
+  "status": "PARTIALLY_RECEIVED",
+  "expected_on": "2026-10-10",
+  "currency_code": "EGP",
+  "subtotal": "14000.00",
+  "tax_total": "952.00",
+  "additional_costs": "120.00",
+  "total_amount": "15072.00",
+  "paid_amount": "2000.00",
+  "outstanding_amount": "13072.00",
+  "payment_status": "PARTIALLY_PAID",
+  "ordered_at": "2026-10-07T11:00:00Z",
   "lines": [
     {
-      "product_id": "b3f1c2a0-4e51-4a2e-9d3e-000000000001",
-      "quantity": 300
+      "po_line_id": "bfa84d51-b1b1-4c50-8a8b-7a8b9c0dbc2a",
+      "product_id": "e5f6a7b8-3333-4ddd-8b2c-34567890abc1",
+      "product_uom_id": "b3c4d5e6-0303-4bbb-9c3d-78901234cdef",
+      "entered_ordered_qty": "80.0000",
+      "conversion_snapshot": "100.000000",
+      "ordered_qty_base": "8000.0000",
+      "received_qty_base": "5000.0000",
+      "rejected_qty_base": "0.0000",
+      "cancelled_qty_base": "0.0000",
+      "remaining_qty_base": "3000.0000",
+      "unit_cost_entered": "85.0000",
+      "unit_cost_base": "0.8500",
+      "discount_amount": "0.00",
+      "tax_rate_snapshot": "0.1400",
+      "tax_amount": "952.00",
+      "line_total": "6800.00",
+      "allocated_additional_cost": "58.29",
+      "min_remaining_shelf_days": 0
+    },
+    {
+      "po_line_id": "c0b95e62-c2c2-4d61-9b9c-8b9c0d1ecd3b",
+      "product_id": "f6a7b8c9-4444-4eee-9c3d-456789012abc",
+      "product_uom_id": "c4d5e6f7-0606-4eee-8f7a-a12345678bc1",
+      "entered_ordered_qty": "60.0000",
+      "conversion_snapshot": "100.000000",
+      "ordered_qty_base": "6000.0000",
+      "received_qty_base": "4500.0000",
+      "rejected_qty_base": "500.0000",
+      "cancelled_qty_base": "0.0000",
+      "remaining_qty_base": "1500.0000",
+      "unit_cost_entered": "120.0000",
+      "unit_cost_base": "1.2000",
+      "discount_amount": "0.00",
+      "tax_rate_snapshot": "0.0000",
+      "tax_amount": "0.00",
+      "line_total": "7200.00",
+      "allocated_additional_cost": "61.71",
+      "min_remaining_shelf_days": 90
     }
   ],
-  "created_by": {
-    "type": "agent",
-    "session_id": "sess-00000000-0000-0000-0000-000000000001",
-    "approved_by": "00000000-0000-0000-0000-000000000002"
-  }
+  "created_at": "2026-10-05T08:15:00Z",
+  "updated_at": "2026-10-15T09:40:00Z"
 }

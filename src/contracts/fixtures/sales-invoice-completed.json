@@ -1,0 +1,62 @@
+{
+  "invoice_id": "d9e0f1a2-9090-4d2f-8b3a-2b3c4d5e6f03",
+  "sales_order_id": "c8d9e0f1-8888-4ccc-8d3e-89012345def0",
+  "branch_id": "d4e5f6a7-3333-4c44-9d55-bbccddeeffaa",
+  "invoice_no": "INV-2026-000192",
+  "status": "ISSUED",
+  "currency_code": "EGP",
+  "subtotal": "69.50",
+  "discount_total": "0.00",
+  "tax_total": "3.36",
+  "grand_total": "72.86",
+  "paid_amount": "72.86",
+  "refunded_amount": "0.00",
+  "payment_status": "PAID",
+  "issued_at": "2026-10-11T14:05:47Z",
+  "lines": [
+    {
+      "invoice_line_id": "d9e0f1a2-1111-4a1e-8c2b-3c4d5e6f7a04",
+      "source_order_line_id": "c8d9e0f1-1010-4c1d-8a1e-1a2b3c4d5e01",
+      "product_id": "e5f6a7b8-3333-4ddd-8b2c-34567890abc1",
+      "product_uom_id": "a2b3c4d5-0202-4aaa-8b2c-67890123bcde",
+      "entered_qty": "2.0000",
+      "conversion_snapshot": "10.000000",
+      "quantity_base": "20.0000",
+      "unit_price_snapshot": "12.0000",
+      "discount_amount": "0.00",
+      "tax_rate_snapshot": "0.1400",
+      "tax_amount_snapshot": "3.36",
+      "net_amount": "24.00",
+      "line_total": "27.36",
+      "unit_cost_snapshot": "8.5000"
+    },
+    {
+      "invoice_line_id": "d9e0f1a2-2222-4a2f-9d3c-3d4e5f6a8b05",
+      "source_order_line_id": "c8d9e0f1-2020-4c2e-9b2f-1a2b3c4d5e02",
+      "product_id": "abababab-5555-4c6c-8d7b-4567890abcde",
+      "product_uom_id": "abababab-0404-4ccc-8d5e-89012345def0",
+      "entered_qty": "1.0000",
+      "conversion_snapshot": "1.000000",
+      "quantity_base": "1.0000",
+      "unit_price_snapshot": "45.5000",
+      "discount_amount": "0.00",
+      "tax_rate_snapshot": "0.0000",
+      "tax_amount_snapshot": "0.00",
+      "net_amount": "45.50",
+      "line_total": "45.50",
+      "unit_cost_snapshot": "32.0000"
+    }
+  ],
+  "payments": [
+    {
+      "payment_id": "e0f1a2b3-3030-4c3f-8d4b-4e5f6a7b9c06",
+      "invoice_id": "d9e0f1a2-9090-4d2f-8b3a-2b3c4d5e6f03",
+      "amount_due": "72.86",
+      "cash_tendered_amount": "73.00",
+      "change_amount": "0.14",
+      "method": "CASH",
+      "received_by_employee_id": "ef456789-0123-4abc-8bcd-ef01234567ab",
+      "paid_at": "2026-10-11T14:05:47Z"
+    }
+  ]
+}

@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/schemas/identity.json",
+  "title": "Pharmacy ERP — Identity Contract (Stage 1)",
+  "description": "Organization, Branch, Employee, UserAccount, branch enrollment. Every tenant-owned row carries organization_id derived from the authenticated context — never from a client field.",
+  "$defs": {
+    "OrganizationDto": {
+      "type": "object",
+      "properties": {
+        "organization_id": { "type": "string", "format": "uuid" },
+        "organization_code": { "type": "string", "maxLength": 30 },
+        "name": { "type": "string", "maxLength": 150 },
+        "base_currency": { "type": "string", "minLength": 3, "maxLength": 3, "default": "EGP" },
+        "time_zone_id": { "type": "string", "maxLength": 64, "description": "IANA TZ identifier, e.g. \"Africa/Cairo\". Drives business dates, the 14-day return window, and expiry comparisons." },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "is_active": { "type": "boolean" }
+      },
+      "required": ["organization_id", "organization_code", "name", "base_currency", "time_zone_id", "is_active"]
+    },
+    "CreateOrganizationRequest": {
+      "type": "object",
+      "description": "PlatformProvisioner-only credential. Atomically creates Organization + first Branch + first Employee + first Admin; seeds one SELLABLE, one QUARANTINE, one SCRAP location.",
+      "required": ["organization_code", "name", "base_currency", "time_zone_id", "address", "branch", "admin"],
+      "properties": {
+        "organization_code": { "type": "string", "maxLength": 30 },
+        "name": { "type": "string", "maxLength": 150 },
+        "base_currency": { "type": "string", "minLength": 3, "maxLength": 3, "default": "EGP" },
+        "time_zone_id": { "type": "string", "maxLength": 64 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "branch": {
+          "type": "object",
+          "required": ["code", "name"],
+          "properties": {
+            "code": { "type": "string", "maxLength": 30 },
+            "name": { "type": "string", "maxLength": 150 },
+            "address": { "$ref": "common.json#/$defs/AddressDto" }
+          }
+        },
+        "admin": {
+          "type": "object",
+          "required": ["employee_no", "full_name", "username", "password"],
+          "properties": {
+            "employee_no": { "type": "string", "maxLength": 30 },
+            "full_name": { "type": "string", "maxLength": 150 },
+            "username": { "type": "string", "maxLength": 80 },
+            "password": { "type": "string", "maxLength": 128 }
+          }
+        }
+      }
+    },
+    "OrganizationSetupResultDto": {
+      "type": "object",
+      "properties": {
+        "organization": { "$ref": "#/$defs/OrganizationDto" },
+        "branch": { "$ref": "#/$defs/BranchDto" },
+        "employee": { "$ref": "#/$defs/EmployeeDto" },
+        "user": { "$ref": "#/$defs/UserDto" },
+        "enrollment_setup_state": { "type": "string", "enum": ["PENDING", "ENROLLED", "FAILED"] }
+      }
+    },
+    "BranchDto": {
+      "type": "object",
+      "required": ["branch_id", "organization_id", "code", "name", "is_active"],
+      "properties": {
+        "branch_id": { "type": "string", "format": "uuid" },
+        "organization_id": { "type": "string", "format": "uuid" },
+        "code": { "type": "string", "maxLength": 30 },
+        "name": { "type": "string", "maxLength": 150 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "is_active": { "type": "boolean" },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "updated_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "BranchRequest": {
+      "type": "object",
+      "required": ["code", "name", "address"],
+      "properties": {
+        "code": { "type": "string", "maxLength": 30 },
+        "name": { "type": "string", "maxLength": 150 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "is_active": { "type": "boolean", "default": true }
+      }
+    },
+    "BranchPatchRequest": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 150 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "is_active": { "type": "boolean" }
+      }
+    },
+    "EnrollmentTokenDto": {
+      "type": "object",
+      "description": "Admin-issued single-use, short-lived enrollment token; stored hashed.",
+      "properties": {
+        "enrollment_id": { "type": "string", "format": "uuid" },
+        "token": { "type": "string", "description": "Plain value returned exactly once." },
+        "expires_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "BranchEnrollmentRequest": {
+      "type": "object",
+      "required": ["token"],
+      "properties": { "token": { "type": "string" } }
+    },
+    "BranchEnrollmentResultDto": {
+      "type": "object",
+      "description": "Branch runtime redeems the token; runs on BranchLocal runtime only.",
+      "properties": {
+        "organization_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "runtime_credential": { "type": "string" },
+        "initial_cursor": { "type": "string" },
+        "credential_expires_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "EmployeeDto": {
+      "type": "object",
+      "required": ["employee_id", "organization_id", "branch_id", "employee_no", "full_name", "is_active"],
+      "properties": {
+        "employee_id": { "type": "string", "format": "uuid" },
+        "organization_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid", "description": "Home branch" },
+        "employee_no": { "type": "string", "maxLength": 30 },
+        "full_name": { "type": "string", "maxLength": 150 },
+        "email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 30 },
+        "job_title": { "type": ["string", "null"], "maxLength": 80 },
+        "hired_on": { "type": ["string", "null"], "format": "date" },
+        "is_active": { "type": "boolean" },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "updated_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "EmployeeRequest": {
+      "type": "object",
+      "required": ["branch_id", "employee_no", "full_name"],
+      "properties": {
+        "branch_id": { "type": "string", "format": "uuid" },
+        "employee_no": { "type": "string", "maxLength": 30 },
+        "full_name": { "type": "string", "maxLength": 150 },
+        "email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 30 },
+        "job_title": { "type": ["string", "null"], "maxLength": 80 }
+      }
+    },
+    "EmployeePatchRequest": {
+      "type": "object",
+      "properties": {
+        "branch_id": { "type": ["string", "null"], "format": "uuid" },
+        "employee_no": { "type": ["string", "null"], "maxLength": 30 },
+        "full_name": { "type": ["string", "null"], "maxLength": 150 },
+        "email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 30 },
+        "job_title": { "type": ["string", "null"], "maxLength": 80 },
+        "hired_on": { "type": ["string", "null"], "format": "date" },
+        "is_active": { "type": ["boolean", "null"] }
+      }
+    },
+    "UserDto": {
+      "type": "object",
+      "required": ["user_id", "employee_id", "username", "role", "branch_scope", "is_active"],
+      "properties": {
+        "user_id": { "type": "string", "format": "uuid" },
+        "employee_id": { "type": ["string", "null"], "format": "uuid" },
+        "username": { "type": "string", "maxLength": 80, "description": "Unique per organization (NOT globally)." },
+        "role": { "$ref": "common.json#/$defs/Role" },
+        "branch_scope": { "$ref": "common.json#/$defs/BranchScope" },
+        "is_active": { "type": "boolean" },
+        "access_failed_count": { "type": "integer", "readOnly": true },
+        "lockout_end": { "$ref": "common.json#/$defs/Timestamp" },
+        "last_login_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "BranchAccessGrantDto": {
+      "type": "object",
+      "properties": {
+        "branch_id": { "type": "string", "format": "uuid" },
+        "branch_code": { "type": "string", "readOnly": true }
+      }
+    },
+    "CreateUserRequest": {
+      "type": "object",
+      "description": "Admin-only endpoint group (user:admin). branch_access required when branch_scope=ASSIGNED.",
+      "required": ["employee_id", "username", "password", "role", "branch_scope"],
+      "properties": {
+        "employee_id": { "type": "string", "format": "uuid" },
+        "username": { "type": "string", "maxLength": 80 },
+        "password": { "type": "string", "maxLength": 128 },
+        "role": { "$ref": "common.json#/$defs/Role" },
+        "branch_scope": { "$ref": "common.json#/$defs/BranchScope" },
+        "branch_access": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/BranchAccessGrantDto" }
+        }
+      }
+    },
+    "UserPatchRequest": {
+      "type": "object",
+      "description": "username is immutable.",
+      "properties": {
+        "role": { "$ref": "common.json#/$defs/Role" },
+        "branch_scope": { "$ref": "common.json#/$defs/BranchScope" },
+        "branch_access": { "type": "array", "items": { "$ref": "#/$defs/BranchAccessGrantDto" } },
+        "is_active": { "type": "boolean" }
+      }
+    },
+    "PasswordResetRequest": {
+      "type": "object",
+      "required": ["new_password"],
+      "properties": {
+        "new_password": { "type": "string", "maxLength": 128 }
+      }
+    }
+  }
+}

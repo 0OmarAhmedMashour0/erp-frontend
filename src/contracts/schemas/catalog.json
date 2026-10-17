@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/schemas/catalog.json",
+  "title": "Pharmacy ERP — Catalog Contract (Stage 1)",
+  "description": "Categories, products, UOMs, reorder rules. UOM mutation is additive/item-level only (no full-list PUT, no hard delete — deactivate via is_active=false). Product tax_rate is fractional 0..1 and is the authoritative POS price/tax source.",
+  "$defs": {
+    "ProductCategoryDto": {
+      "type": "object",
+      "required": ["category_id", "code", "name", "is_active"],
+      "properties": {
+        "category_id": { "type": "string", "format": "uuid" },
+        "parent_category_id": { "type": ["string", "null"], "format": "uuid" },
+        "code": { "type": "string", "maxLength": 30 },
+        "name": { "type": "string", "maxLength": 100 },
+        "description": { "type": ["string", "null"], "maxLength": 250 },
+        "is_active": { "type": "boolean" },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "updated_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "ProductCategoryRequest": {
+      "type": "object",
+      "required": ["code", "name"],
+      "properties": {
+        "parent_category_id": { "type": ["string", "null"], "format": "uuid" },
+        "code": { "type": "string", "maxLength": 30 },
+        "name": { "type": "string", "maxLength": 100 },
+        "description": { "type": ["string", "null"], "maxLength": 250 },
+        "is_active": { "type": "boolean", "default": true }
+      }
+    },
+    "ProductCategoryPatchRequest": {
+      "type": "object",
+      "properties": {
+        "parent_category_id": { "type": ["string", "null"], "format": "uuid" },
+        "code": { "type": ["string", "null"], "maxLength": 30 },
+        "name": { "type": ["string", "null"], "maxLength": 100 },
+        "description": { "type": ["string", "null"], "maxLength": 250 },
+        "is_active": { "type": ["boolean", "null"] }
+      }
+    },
+    "ProductUomDto": {
+      "type": "object",
+      "required": ["product_uom_id", "uom_code", "display_name", "conversion_to_base", "is_base", "is_sellable", "is_purchasable", "is_active"],
+      "properties": {
+        "product_uom_id": { "type": "string", "format": "uuid" },
+        "uom_code": { "type": "string", "maxLength": 20 },
+        "display_name": { "type": "string", "maxLength": 50 },
+        "conversion_to_base": { "$ref": "common.json#/$defs/Numeric6", "description": ">0. Immutable once referenced by a posted document or stock." },
+        "sale_unit_price": { "$ref": "common.json#/$defs/Numeric4", "description": "REQUIRED (non-null, >=0) when is_sellable=true. This is the AUTHORITATIVE POS sale price." },
+        "is_base": { "type": "boolean" },
+        "is_sellable": { "type": "boolean" },
+        "is_purchasable": { "type": "boolean" },
+        "is_active": { "type": "boolean" }
+      }
+    },
+    "ProductUomRequest": {
+      "type": "object",
+      "required": ["uom_code", "display_name", "conversion_to_base"],
+      "properties": {
+        "uom_code": { "type": "string", "maxLength": 20 },
+        "display_name": { "type": "string", "maxLength": 50 },
+        "conversion_to_base": { "$ref": "common.json#/$defs/Numeric6", "description": ">0; must be 1.000000 for the base UOM." },
+        "sale_unit_price": { "$ref": "common.json#/$defs/Numeric4" },
+        "is_base": { "type": "boolean", "default": false },
+        "is_sellable": { "type": "boolean", "default": false },
+        "is_purchasable": { "type": "boolean", "default": false }
+      }
+    },
+    "ProductUomPatchRequest": {
+      "type": "object",
+      "description": "Permitted non-historical attributes only. conversion_to_base and is_base become immutable once referenced.",
+      "properties": {
+        "display_name": { "type": ["string", "null"], "maxLength": 50 },
+        "sale_unit_price": { "$ref": "common.json#/$defs/Numeric4" },
+        "is_sellable": { "type": ["boolean", "null"] },
+        "is_purchasable": { "type": ["boolean", "null"] },
+        "is_active": { "type": ["boolean", "null"], "description": "Deactivate with false; never deletes the row." }
+      }
+    },
+    "ProductDto": {
+      "type": "object",
+      "required": ["product_id", "category_id", "sku", "name", "base_uom_code", "tax_rate", "lot_tracking_required", "expiry_alert_days", "is_active", "uoms"],
+      "properties": {
+        "product_id": { "type": "string", "format": "uuid" },
+        "category_id": { "type": "string", "format": "uuid" },
+        "sku": { "type": "string", "maxLength": 40 },
+        "barcode": { "type": ["string", "null"], "maxLength": 80 },
+        "name": { "type": "string", "maxLength": 180 },
+        "generic_name": { "type": ["string", "null"], "maxLength": 180 },
+        "brand_name": { "type": ["string", "null"], "maxLength": 180 },
+        "base_uom_code": { "type": "string", "maxLength": 20, "description": "Must identify the single active is_base=true UOM." },
+        "tax_rate": { "$ref": "common.json#/$defs/TaxRate" },
+        "image_url": { "type": ["string", "null"], "maxLength": 300 },
+        "lot_tracking_required": { "type": "boolean", "description": "Cannot change while stock or posted ledger history exists." },
+        "expiry_alert_days": { "type": "integer", "minimum": 0, "maximum": 3650 },
+        "is_active": { "type": "boolean" },
+        "uoms": { "type": "array", "items": { "$ref": "#/$defs/ProductUomDto" } },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "updated_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "CreateProductRequest": {
+      "type": "object",
+      "required": ["category_id", "sku", "name", "base_uom_code", "uoms"],
+      "properties": {
+        "category_id": { "type": "string", "format": "uuid" },
+        "sku": { "type": "string", "maxLength": 40 },
+        "barcode": { "type": ["string", "null"], "maxLength": 80 },
+        "name": { "type": "string", "maxLength": 180 },
+        "generic_name": { "type": ["string", "null"], "maxLength": 180 },
+        "brand_name": { "type": ["string", "null"], "maxLength": 180 },
+        "base_uom_code": { "type": "string", "maxLength": 20 },
+        "tax_rate": { "$ref": "common.json#/$defs/TaxRate", "default": "0.0000" },
+        "image_url": { "type": ["string", "null"], "maxLength": 300 },
+        "lot_tracking_required": { "type": "boolean", "default": false },
+        "expiry_alert_days": { "type": "integer", "minimum": 0, "maximum": 3650, "default": 0 },
+        "uoms": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ProductUomRequest" },
+          "description": "Must include exactly one is_base=true entry with conversion_to_base=1."
+        }
+      }
+    },
+    "ProductPatchRequest": {
+      "type": "object",
+      "properties": {
+        "category_id": { "type": ["string", "null"], "format": "uuid" },
+        "barcode": { "type": ["string", "null"], "maxLength": 80 },
+        "name": { "type": ["string", "null"], "maxLength": 180 },
+        "generic_name": { "type": ["string", "null"], "maxLength": 180 },
+        "brand_name": { "type": ["string", "null"], "maxLength": 180 },
+        "tax_rate": { "$ref": "common.json#/$defs/TaxRate" },
+        "image_url": { "type": ["string", "null"], "maxLength": 300 },
+        "lot_tracking_required": { "type": ["boolean", "null"] },
+        "expiry_alert_days": { "type": ["integer", "null"], "minimum": 0, "maximum": 3650 },
+        "is_active": { "type": ["boolean", "null"] }
+      }
+    },
+    "ReorderRuleDto": {
+      "type": "object",
+      "description": "Optional threshold + suggested replenishment qty per product/branch. Read/config only — never creates POs or changes stock.",
+      "required": ["reorder_rule_id", "product_id", "branch_id", "reorder_point_base", "reorder_quantity_base", "is_active"],
+      "properties": {
+        "reorder_rule_id": { "type": "string", "format": "uuid" },
+        "product_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "reorder_point_base": { "$ref": "common.json#/$defs/Numeric4", "description": ">=0, in BASE units." },
+        "reorder_quantity_base": { "$ref": "common.json#/$defs/Numeric4", "description": ">=0, in BASE units." },
+        "max_quantity_base": { "$ref": "common.json#/$defs/Numeric4", "description": "NULL or >= reorder_point_base." },
+        "is_active": { "type": "boolean" }
+      }
+    },
+    "ReorderRuleRequest": {
+      "type": "object",
+      "required": ["product_id", "branch_id", "reorder_point_base", "reorder_quantity_base"],
+      "properties": {
+        "product_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "reorder_point_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "reorder_quantity_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "max_quantity_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "is_active": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

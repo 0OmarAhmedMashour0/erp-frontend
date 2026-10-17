@@ -1,70 +1,116 @@
-/**
- * Contract Fixtures Type Compatibility Test
- * Verifies that all 7 JSON fixtures in src/contracts/fixtures/ are 100% type-compatible
- * with their corresponding TypeScript interfaces in src/types/api.ts.
- */
-import { describe, it, expect } from 'vitest';
-
-import inventoryJson from './inventory.json';
-import purchaseOrderJson from './purchase-order.json';
-import authClaimsJson from './auth-claims.json';
-import errorJson from './error.json';
-import aiInsightJson from './ai-insight.json';
-import aiAgentToolJson from './ai-agent-tool.json';
-import eventSaleCreatedJson from './event-sale-created.json';
+import { describe, it, expect } from "vitest";
 
 import type {
-  InventoryItem,
-  PurchaseOrder,
-  AuthClaims,
-  ApiError,
-  Insight,
-  AgentTool,
-  EventEnvelope,
-  SaleCreatedPayload,
-} from '../../types/api';
+  BranchDto,
+  OrganizationDto,
+  ProductDto,
+  InventoryBalanceDto,
+  SalesOrderDto,
+  SalesInvoiceDto,
+  SalesReturnDto,
+  SupplierDto,
+  PurchaseOrderDto,
+  VendorReturnDto,
+  TokenPairResponse,
+  CurrentUserContext,
+} from "../../types/generated";
 
-describe('Contract Fixtures Type Compatibility', () => {
-  it('inventory.json matches InventoryItem', () => {
-    const item: InventoryItem = inventoryJson;
-    expect(item.product_id).toBe('b3f1c2a0-4e51-4a2e-9d3e-000000000001');
-    expect(item.schema).toBe('canonical.InventoryItem');
+import branchFixture from "./branch.json";
+import organizationFixture from "./organization.json";
+import productFixture from "./product.json";
+import inventoryBalanceFixture from "./inventory-balance.json";
+import salesOrderDraftFixture from "./sales-order-draft.json";
+import salesInvoiceCompletedFixture from "./sales-invoice-completed.json";
+import salesReturnFixture from "./sales-return.json";
+import supplierFixture from "./supplier.json";
+import purchaseOrderFixture from "./purchase-order.json";
+import vendorReturnFixture from "./vendor-return.json";
+import authTokenPairFixture from "./auth-token-pair.json";
+import currentUserContextFixture from "./current-user-context.json";
+
+describe("Phase 0 Contract Fixtures Type Conformance", () => {
+  it("branch.json conforms to BranchDto", () => {
+    const branch: BranchDto = branchFixture;
+    expect(branch.branch_id).toBeDefined();
+    expect(branch.code).toBe("BR-CAI-01");
   });
 
-  it('purchase-order.json matches PurchaseOrder', () => {
-    const po: PurchaseOrder = purchaseOrderJson;
-    expect(po.supplier_id).toBe('8a1e9c20-1b2c-4d3e-8f9a-000000000001');
-    expect(po.schema).toBe('canonical.PurchaseOrder');
-    expect(po.lines?.[0].quantity).toBe(300);
+  it("organization.json conforms to OrganizationDto", () => {
+    const org: OrganizationDto = organizationFixture;
+    expect(org.organization_id).toBeDefined();
+    expect(org.base_currency).toBe("EGP");
+    expect(org.time_zone_id).toBe("Africa/Cairo");
   });
 
-  it('auth-claims.json matches AuthClaims', () => {
-    const claims: AuthClaims = authClaimsJson;
-    expect(claims.sub).toBe('user-uuid');
-    expect(claims.roles).toContain('Pharmacist');
+  it("product.json conforms to ProductDto", () => {
+    const product: ProductDto = productFixture;
+    expect(product.product_id).toBeDefined();
+    expect(product.uoms.length).toBeGreaterThan(0);
+    const baseUom = product.uoms.find((u) => u.is_base);
+    expect(baseUom).toBeDefined();
+    expect(baseUom?.conversion_to_base).toBe("1.000000");
   });
 
-  it('error.json matches ApiError', () => {
-    const err: ApiError = errorJson;
-    expect(err.error.code).toBe('VALIDATION_ERROR');
-    expect(err.error.details?.[0].field).toBe('quantity');
+  it("inventory-balance.json conforms to InventoryBalanceDto", () => {
+    const balance: InventoryBalanceDto = inventoryBalanceFixture;
+    expect(balance.product_id).toBeDefined();
+    expect(balance.on_hand_qty_base).toBeDefined();
+    expect(balance.average_unit_cost).toBeDefined();
   });
 
-  it('ai-insight.json matches Insight', () => {
-    const insight: Insight = aiInsightJson;
-    expect(insight.type).toBe('insight.stockout_risk');
-    expect(insight.forecast?.horizon_days).toBe(14);
+  it("sales-order-draft.json conforms to SalesOrderDto", () => {
+    const order: SalesOrderDto = salesOrderDraftFixture as SalesOrderDto;
+    expect(order.order_status).toBe("DRAFT");
+    expect(order.channel).toBe("POS");
+    expect(order.lines.length).toBeGreaterThan(0);
   });
 
-  it('ai-agent-tool.json matches AgentTool', () => {
-    const tool: AgentTool = aiAgentToolJson;
-    expect(tool.name).toBe('create_purchase_order');
-    expect(tool.requires_approval).toBe(true);
+  it("sales-invoice-completed.json conforms to SalesInvoiceDto", () => {
+    const invoice: SalesInvoiceDto = salesInvoiceCompletedFixture as SalesInvoiceDto;
+    expect(invoice.status).toBe("ISSUED");
+    expect(invoice.payment_status).toBe("PAID");
+    expect(invoice.payments.length).toBeGreaterThan(0);
+    expect(invoice.payments[0].method).toBe("CASH");
   });
 
-  it('event-sale-created.json matches EventEnvelope<SaleCreatedPayload>', () => {
-    const event: EventEnvelope<SaleCreatedPayload> = eventSaleCreatedJson;
-    expect(event.event_type).toBe('SaleCreated');
-    expect(event.payload.total_amount).toBe(91.0);
+  it("sales-return.json conforms to SalesReturnDto", () => {
+    const returnDoc: SalesReturnDto = salesReturnFixture as SalesReturnDto;
+    expect(returnDoc.status).toBe("POSTED");
+    expect(returnDoc.inventory_txn?.transaction_type).toBe("SALES_RETURN_IN");
+    expect(returnDoc.refund?.method).toBe("CASH");
+  });
+
+  it("supplier.json conforms to SupplierDto", () => {
+    const supplier: SupplierDto = supplierFixture;
+    expect(supplier.supplier_id).toBeDefined();
+    expect(supplier.supplier_code).toBe("SUP-EG-CLX");
+  });
+
+  it("purchase-order.json conforms to PurchaseOrderDto", () => {
+    const po: PurchaseOrderDto = purchaseOrderFixture as PurchaseOrderDto;
+    expect(po.status).toBe("PARTIALLY_RECEIVED");
+    expect(po.payment_status).toBe("PARTIALLY_PAID");
+    expect(po.lines[0].allocated_additional_cost).toBe("58.29");
+    expect(po.lines[1].allocated_additional_cost).toBe("61.71");
+  });
+
+  it("vendor-return.json conforms to VendorReturnDto", () => {
+    const vr: VendorReturnDto = vendorReturnFixture as VendorReturnDto;
+    expect(vr.status).toBe("POSTED");
+    expect(vr.inventory_txn?.transaction_type).toBe("VENDOR_RETURN_OUT");
+  });
+
+  it("auth-token-pair.json conforms to TokenPairResponse", () => {
+    const tokenPair: TokenPairResponse = authTokenPairFixture as TokenPairResponse;
+    expect(tokenPair.token_type).toBe("Bearer");
+    expect(tokenPair.user.role).toBe("Pharmacist");
+    expect(tokenPair.key_id).toBe("erp-2026-10-k1");
+  });
+
+  it("current-user-context.json conforms to CurrentUserContext", () => {
+    const ctx: CurrentUserContext = currentUserContextFixture as CurrentUserContext;
+    expect(ctx.runtime).toBe("BranchLocal");
+    expect(ctx.roles).toContain("Pharmacist");
+    expect(ctx.organization_code).toBe("PHARMAPLUS");
   });
 });

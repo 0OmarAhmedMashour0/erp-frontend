@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/schemas/purchasing.json",
+  "title": "Pharmacy ERP — Purchasing Contract (Stage 3)",
+  "description": "Suppliers (Cloud), POs (Cloud: create/approve/order; BranchLocal: receive/cancel-remaining), supplier payments (Cloud), vendor returns (BranchLocal). One-step receiving posts accepted units directly to the inventory ledger — there is NO separate goods-receipt module. Supplier payment is an order-level cash settlement, not an AP ledger.",
+  "$defs": {
+    "SupplierDto": {
+      "type": "object",
+      "required": ["supplier_id", "supplier_code", "legal_name", "default_lead_time_days", "is_active"],
+      "properties": {
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "supplier_code": { "type": "string", "maxLength": 30, "description": "Unique per organization." },
+        "legal_name": { "type": "string", "maxLength": 180 },
+        "tax_registration_number": { "type": ["string", "null"], "maxLength": 60 },
+        "contact_email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 30 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "default_lead_time_days": { "type": "integer", "minimum": 0 },
+        "is_active": { "type": "boolean", "description": "Deactivation preserves historical POs." },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "updated_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "CreateSupplierRequest": {
+      "type": "object",
+      "required": ["supplier_code", "legal_name", "address"],
+      "properties": {
+        "supplier_code": { "type": "string", "maxLength": 30 },
+        "legal_name": { "type": "string", "maxLength": 180 },
+        "tax_registration_number": { "type": ["string", "null"], "maxLength": 60 },
+        "contact_email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 30 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "default_lead_time_days": { "type": "integer", "minimum": 0, "default": 0 },
+        "is_active": { "type": "boolean", "default": true }
+      }
+    },
+    "SupplierPatchRequest": {
+      "type": "object",
+      "properties": {
+        "legal_name": { "type": ["string", "null"], "maxLength": 180 },
+        "tax_registration_number": { "type": ["string", "null"], "maxLength": 60 },
+        "contact_email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 30 },
+        "address": { "$ref": "common.json#/$defs/AddressDto" },
+        "default_lead_time_days": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "SupplierStatusPatchRequest": {
+      "type": "object",
+      "required": ["is_active"],
+      "properties": { "is_active": { "type": "boolean" } }
+    },
+    "PurchaseOrderStatus": {
+      "type": "string",
+      "enum": ["DRAFT", "APPROVED", "ORDERED", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"],
+      "description": "RECEIVED = all ordered quantity accepted. A rejected remainder keeps the order open until accepted or explicitly cancelled (then CLOSED). CANCELLED allowed pre-order only with paid_amount=0."
+    },
+    "PurchaseOrderPaymentStatus": {
+      "type": "string",
+      "enum": ["UNPAID", "PARTIALLY_PAID", "PAID"],
+      "description": "Derived from paid_amount vs total_amount; overpayment prohibited."
+    },
+    "PurchaseOrderLineDto": {
+      "type": "object",
+      "required": ["po_line_id", "product_id", "product_uom_id", "entered_ordered_qty", "conversion_snapshot", "ordered_qty_base", "received_qty_base", "rejected_qty_base", "cancelled_qty_base", "unit_cost_entered", "unit_cost_base", "discount_amount", "tax_rate_snapshot", "tax_amount", "line_total", "allocated_additional_cost", "min_remaining_shelf_days"],
+      "properties": {
+        "po_line_id": { "type": "string", "format": "uuid" },
+        "product_id": { "type": "string", "format": "uuid" },
+        "product_uom_id": { "type": "string", "format": "uuid" },
+        "entered_ordered_qty": { "$ref": "common.json#/$defs/Numeric4" },
+        "conversion_snapshot": { "$ref": "common.json#/$defs/Numeric6" },
+        "ordered_qty_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "received_qty_base": { "$ref": "common.json#/$defs/Numeric4", "description": "Cumulative ACCEPTED quantity only (rejected excluded)." },
+        "rejected_qty_base": { "$ref": "common.json#/$defs/Numeric4", "description": "Visible, replaceable; does not reduce the obligation." },
+        "cancelled_qty_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "remaining_qty_base": { "$ref": "common.json#/$defs/Numeric4", "description": "= ordered - accepted - cancelled." },
+        "unit_cost_entered": { "$ref": "common.json#/$defs/Numeric4" },
+        "unit_cost_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "discount_amount": { "$ref": "common.json#/$defs/Money" },
+        "tax_rate_snapshot": { "$ref": "common.json#/$defs/TaxRate", "description": "Snapshot of PRODUCT.tax_rate at PO creation." },
+        "tax_amount": { "$ref": "common.json#/$defs/Money" },
+        "line_total": { "$ref": "common.json#/$defs/Money", "description": "Net of line discount; excludes tax." },
+        "allocated_additional_cost": { "$ref": "common.json#/$defs/Money", "description": "Header additional costs allocated pro-rata ordered line net at creation; released to accepted units pro-rata on each receipt." },
+        "min_remaining_shelf_days": { "type": "integer", "minimum": 0, "default": 90, "description": "Per-line lot-tracking shelf-life override; 0 effective for non-lot products." }
+      }
+    },
+    "PurchaseOrderDto": {
+      "type": "object",
+      "required": ["purchase_order_id", "po_no", "supplier_id", "branch_id", "created_by_employee_id", "status", "currency_code", "subtotal", "tax_total", "additional_costs", "total_amount", "paid_amount", "payment_status", "lines"],
+      "properties": {
+        "purchase_order_id": { "type": "string", "format": "uuid" },
+        "po_no": { "type": "string", "maxLength": 40 },
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "created_by_employee_id": { "type": "string", "format": "uuid" },
+        "status": { "$ref": "#/$defs/PurchaseOrderStatus" },
+        "expected_on": { "type": ["string", "null"], "format": "date" },
+        "currency_code": { "type": "string", "description": "Must equal Organization base_currency; no FX conversion in MVP." },
+        "subtotal": { "$ref": "common.json#/$defs/Money" },
+        "tax_total": { "$ref": "common.json#/$defs/Money" },
+        "additional_costs": { "$ref": "common.json#/$defs/Money", "description": "Header-level, not taxed separately." },
+        "total_amount": { "$ref": "common.json#/$defs/Money", "description": "= subtotal + tax_total + additional_costs." },
+        "paid_amount": { "$ref": "common.json#/$defs/Money" },
+        "outstanding_amount": { "$ref": "common.json#/$defs/Money", "description": "= total - paid; supplier payments cannot exceed it." },
+        "payment_status": { "$ref": "#/$defs/PurchaseOrderPaymentStatus" },
+        "ordered_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "lines": { "type": "array", "items": { "$ref": "#/$defs/PurchaseOrderLineDto" } },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "updated_at": { "$ref": "common.json#/$defs/Timestamp" }
+      }
+    },
+    "PurchaseOrderLineRequest": {
+      "type": "object",
+      "required": ["product_id", "product_uom_id", "entered_ordered_qty", "unit_cost_entered"],
+      "properties": {
+        "product_id": { "type": "string", "format": "uuid" },
+        "product_uom_id": { "type": "string", "format": "uuid" },
+        "entered_ordered_qty": { "$ref": "common.json#/$defs/Numeric4", "description": ">0 in the entered UOM; server normalizes to base." },
+        "unit_cost_entered": { "$ref": "common.json#/$defs/Numeric4", "description": "Per entered UOM." },
+        "discount_amount": { "$ref": "common.json#/$defs/Money", "default": "0.00" },
+        "tax_rate_snapshot": { "$ref": "common.json#/$defs/TaxRate", "description": "OPTIONAL/informational; server snapshots PRODUCT.tax_rate." },
+        "min_remaining_shelf_days": { "type": "integer", "minimum": 0, "default": 90 }
+      }
+    },
+    "CreatePurchaseOrderRequest": {
+      "type": "object",
+      "required": ["supplier_id", "branch_id", "currency_code", "lines"],
+      "properties": {
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "expected_on": { "type": ["string", "null"], "format": "date" },
+        "currency_code": { "type": "string" },
+        "additional_costs": { "$ref": "common.json#/$defs/Money", "description": "Optional header cost; allocated to lines once at creation." },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/PurchaseOrderLineRequest" }
+        }
+      }
+    },
+    "PurchaseOrderPatchRequest": {
+      "type": "object",
+      "description": "DRAFT-only. After APPROVED/ORDERED, ordered documents are not silently rewritten.",
+      "properties": {
+        "expected_on": { "type": ["string", "null"], "format": "date" },
+        "lines": { "type": "array", "items": { "$ref": "#/$defs/PurchaseOrderLineRequest" } }
+      }
+    },
+    "CancelPurchaseOrderRequest": {
+      "type": "object",
+      "required": ["reason_code"],
+      "description": "DRAFT/APPROVED pre-order cancel with reason — only when no supplier payment has been posted.",
+      "properties": {
+        "reason_code": { "type": "string", "maxLength": 40 },
+        "note": { "type": ["string", "null"], "maxLength": 500 }
+      }
+    },
+    "CancelPurchaseOrderRemainingRequest": {
+      "type": "object",
+      "required": ["reason_code"],
+      "description": "BranchLocal-only remaining-obligation cancellation with reason; transitions to CLOSED when no uncancelled quantity remains.",
+      "properties": {
+        "reason_code": { "type": "string", "maxLength": 40 },
+        "note": { "type": ["string", "null"], "maxLength": 500 }
+      }
+    },
+    "OrderPurchaseOrderRequest": {
+      "type": "object",
+      "description": "Empty body; APPROVED -> ORDERED (marks ordered/sent; frozen terms).",
+      "properties": {}
+    },
+    "ReceiveLineRequest": {
+      "type": "object",
+      "required": ["po_line_id", "product_id", "product_uom_id", "received_qty_base", "accepted_qty_base", "batch_number"],
+      "description": "One receipt line per accepted/rejected lot. received_qty_base = accepted_qty_base + rejected_qty_base.",
+      "properties": {
+        "po_line_id": { "type": "string", "format": "uuid" },
+        "product_id": { "type": "string", "format": "uuid" },
+        "product_uom_id": { "type": "string", "format": "uuid" },
+        "accepted_qty_base": { "$ref": "common.json#/$defs/Numeric4", "description": ">=0; posts positive ledger lines; releases pro-rata allocation cost." },
+        "rejected_qty_base": { "$ref": "common.json#/$defs/Numeric4", "default": "0.0000", "description": "Does NOT enter sellable stock; stays replaceable." },
+        "received_qty_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "batch_number": { "type": "string", "maxLength": 80, "description": "Exact, case-sensitive; batch row is created/reused deterministically (UUIDv5)." },
+        "manufactured_on": { "type": ["string", "null"], "format": "date" },
+        "expires_on": { "type": ["string", "null"], "format": "date", "description": "Required for lot-tracked products; must satisfy expires_on >= received_on + min_remaining_shelf_days." },
+        "override_reason": { "type": ["string", "null"], "description": "Required for an authorized shelf-life exception (role-guarded); produces EXPIRY_POLICY_VIOLATION 422 if absent." }
+      }
+    },
+    "ReceivePurchaseOrderRequest": {
+      "type": "object",
+      "required": ["location_id", "received_on", "lines"],
+      "properties": {
+        "location_id": { "type": "string", "format": "uuid", "description": "Receiving location at the PO branch." },
+        "received_on": { "type": "string", "format": "date", "description": "Business date in the Organization time zone." },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ReceiveLineRequest" }
+        }
+      }
+    },
+    "PurchaseReceiptResultDto": {
+      "type": "object",
+      "required": ["inventory_txn_id", "purchase_order_status", "lines"],
+      "properties": {
+        "inventory_txn_id": { "type": "string", "format": "uuid" },
+        "purchase_order_status": { "$ref": "#/$defs/PurchaseOrderStatus" },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["po_line_id", "product_id", "accepted_qty_base", "rejected_qty_base", "remaining_qty_base", "batch_id"],
+            "properties": {
+              "po_line_id": { "type": "string", "format": "uuid" },
+              "product_id": { "type": "string", "format": "uuid" },
+              "accepted_qty_base": { "$ref": "common.json#/$defs/Numeric4" },
+              "rejected_qty_base": { "$ref": "common.json#/$defs/Numeric4" },
+              "remaining_qty_base": { "$ref": "common.json#/$defs/Numeric4" },
+              "batch_id": { "type": "string", "format": "uuid" }
+            }
+          }
+        },
+        "trace_id": { "type": "string" }
+      }
+    },
+    "RecordSupplierPaymentRequest": {
+      "type": "object",
+      "required": ["supplier_id", "purchase_order_id", "amount", "currency_code", "method"],
+      "description": "Cloud runtime. Allowed for APPROVED/ORDERED/PARTIALLY_RECEIVED/RECEIVED/CLOSED POs with positive outstanding; rejected for DRAFT/CANCELLED; amount <= outstanding.",
+      "properties": {
+        "supplier_id": { "type": "string", "format": "uuid", "description": "Must match the PO supplier (DB composite FK enforced)." },
+        "purchase_order_id": { "type": "string", "format": "uuid" },
+        "amount": { "$ref": "common.json#/$defs/Money", "description": ">0 and <= PO outstanding." },
+        "currency_code": { "type": "string", "description": "Must match the PO currency." },
+        "method": { "type": "string", "const": "CASH" },
+        "payment_reference": { "type": ["string", "null"], "maxLength": 100 },
+        "note": { "type": ["string", "null"], "maxLength": 250 }
+      }
+    },
+    "SupplierPaymentDto": {
+      "type": "object",
+      "required": ["supplier_payment_id", "supplier_id", "purchase_order_id", "amount", "currency_code", "method", "paid_at", "recorded_by_employee_id"],
+      "properties": {
+        "supplier_payment_id": { "type": "string", "format": "uuid" },
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "purchase_order_id": { "type": "string", "format": "uuid" },
+        "amount": { "$ref": "common.json#/$defs/Money" },
+        "currency_code": { "type": "string" },
+        "method": { "type": "string", "const": "CASH" },
+        "payment_reference": { "type": ["string", "null"] },
+        "note": { "type": ["string", "null"] },
+        "paid_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "recorded_by_employee_id": { "type": "string", "format": "uuid" },
+        "po_paid_amount": { "$ref": "common.json#/$defs/Money" },
+        "po_outstanding_amount": { "$ref": "common.json#/$defs/Money" },
+        "po_payment_status": { "$ref": "#/$defs/PurchaseOrderPaymentStatus" }
+      }
+    },
+    "VendorReturnStatus": { "type": "string", "enum": ["DRAFT", "POSTED", "CANCELLED"] },
+    "VendorReturnLineRequest": {
+      "type": "object",
+      "required": ["purchase_order_line_id", "batch_id", "location_id", "quantity_base"],
+      "properties": {
+        "purchase_order_line_id": { "type": "string", "format": "uuid" },
+        "batch_id": { "type": "string", "format": "uuid" },
+        "location_id": { "type": "string", "format": "uuid" },
+        "quantity_base": { "$ref": "common.json#/$defs/Numeric4", "description": "Cannot exceed accepted received stock still available for that batch/line." },
+        "reason_code": { "type": ["string", "null"], "maxLength": 40 }
+      }
+    },
+    "CreateVendorReturnRequest": {
+      "type": "object",
+      "required": ["supplier_id", "branch_id", "lines"],
+      "description": "BranchLocal runtime. Creates a DRAFT return; POST produces the negative VENDOR_RETURN_OUT ledger transaction.",
+      "properties": {
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "reason_code": { "type": ["string", "null"], "maxLength": 40 },
+        "note": { "type": ["string", "null"], "maxLength": 500 },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/VendorReturnLineRequest" }
+        }
+      }
+    },
+    "VendorReturnLineDto": {
+      "type": "object",
+      "required": ["vendor_return_line_id", "purchase_order_line_id", "product_id", "batch_id", "location_id", "quantity_base", "unit_cost_snapshot"],
+      "properties": {
+        "vendor_return_line_id": { "type": "string", "format": "uuid" },
+        "purchase_order_line_id": { "type": "string", "format": "uuid" },
+        "product_id": { "type": "string", "format": "uuid" },
+        "batch_id": { "type": "string", "format": "uuid" },
+        "location_id": { "type": "string", "format": "uuid" },
+        "quantity_base": { "$ref": "common.json#/$defs/Numeric4" },
+        "unit_cost_snapshot": { "$ref": "common.json#/$defs/Numeric4" },
+        "reason_code": { "type": ["string", "null"], "maxLength": 40 }
+      }
+    },
+    "VendorReturnDto": {
+      "type": "object",
+      "required": ["vendor_return_id", "return_no", "supplier_id", "branch_id", "created_by_employee_id", "status", "created_at", "lines"],
+      "properties": {
+        "vendor_return_id": { "type": "string", "format": "uuid" },
+        "return_no": { "type": "string", "maxLength": 40 },
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "branch_id": { "type": "string", "format": "uuid" },
+        "created_by_employee_id": { "type": "string", "format": "uuid" },
+        "status": { "$ref": "#/$defs/VendorReturnStatus" },
+        "reason_code": { "type": ["string", "null"], "maxLength": 40 },
+        "note": { "type": ["string", "null"], "maxLength": 500 },
+        "created_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "posted_at": { "$ref": "common.json#/$defs/Timestamp" },
+        "lines": { "type": "array", "items": { "$ref": "#/$defs/VendorReturnLineDto" } },
+        "inventory_txn": { "$ref": "inventory.json#/$defs/InventoryTxnDto", "description": "VENDOR_RETURN_OUT ledger transaction (present after POST)." }
+      }
+    }
+  }
+}

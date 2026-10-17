@@ -1,0 +1,25 @@
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImVycC0yMDI2LTEwLWsxIn0.eyJzdWIiOiI1NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJyb2xlcyI6WyJQaGFybWFjaXN0Il0sIm9yZ2FuaXphdGlvbl9pZCI6ImIxYzJkM2U0LTIyMjItNGIzMy04YzQ0LWFhYmJjY2RkZWVmZiIsImJyYW5jaF9zY29wZSI6IkFTU0lHTkVEIiwiYnJhbmNoX2lkcyI6WyJkNGU1ZjZhNy0zMzMzLTRjNDQtOWQ1NS1iYmNjZGRlZWZmYWEiXSwic2NvcGVzIjpbImludmVudG9yeTpyZWFkIiwiaW52ZW50b3J5OndyaXRlIiwic2FsZXM6cmVhZGFuZHNlbGwiLCJwdXJjaGFzZS1vcmRlcjpyZWFkIiwicHVyY2hhc2Utb3JkZXI6ZHJhZnQiLCJwdXJjaGFzZS1vcmRlcjphcHByb3ZlIiwicHVyY2hhc2Utb3JkZXI6cmVjZWl2ZSIsInN1cHBsaWVyLXBheW1lbnQ6d3JpdGUiLCJyZXR1cm46d3JpdGUiXSwiaWF0IjoxNzU4NzAwMDAwLCJleHAiOjE3NTg3MDM2MDB9.synthetic-signature",
+  "refresh_token": "rt_pharma_2026_sec_99a8b7c6d5e4f3a2b1c0d9e8",
+  "expires_in": 3600,
+  "token_type": "Bearer",
+  "user": {
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "employee_id": "fa567890-1234-4def-9fbe-fa12345678de",
+    "username": "fa.pharmacist",
+    "role": "Pharmacist",
+    "branch_scope": "ASSIGNED",
+    "is_active": true,
+    "access_failed_count": 0,
+    "lockout_end": null,
+    "last_login_at": "2026-10-17T08:30:00Z"
+  },
+  "organization_id": "b1c2d3e4-2222-4b33-8c44-aabbccddeeff",
+  "branch_scope": "ASSIGNED",
+  "branch_ids": [
+    "d4e5f6a7-3333-4c44-9d55-bbccddeeffaa"
+  ],
+  "issuer": "https://identity.pharmaplus.eg",
+  "audience": "https://erp.pharmaplus.eg",
+  "key_id": "erp-2026-10-k1"
+}
