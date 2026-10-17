@@ -7,8 +7,15 @@
  * - Branch-local runtime: access tokens max 24h validity, constrained to the
  *   enrolled branch.
  */
-import type { Uuid, Role, BranchScope, PermissionScope, RuntimeMode, AuthMetadata } from "./common";
-import type { UserDto } from "./identity";
+import type {
+  Uuid,
+  Role,
+  BranchScope,
+  PermissionScope,
+  RuntimeMode,
+  AuthMetadata,
+} from './common';
+import type { UserDto } from './identity';
 
 export interface LoginRequest {
   organization_code: string;
@@ -21,7 +28,7 @@ export interface TokenPairResponse extends AuthMetadata {
   refresh_token: string;
   /** access-token lifetime seconds; branch-local offline max 86400 */
   expires_in: number;
-  token_type: "Bearer";
+  token_type: 'Bearer';
   user: UserDto;
   organization_id: Uuid;
   branch_scope: BranchScope;

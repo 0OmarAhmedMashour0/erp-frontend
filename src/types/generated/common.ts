@@ -36,24 +36,24 @@ export interface AddressDto {
 // Auth vocabulary (case-sensitive closed sets)
 // ---------------------------------------------------------------------------
 
-export type Role = "Admin" | "Pharmacist" | "Cashier";
-export type BranchScope = "ALL" | "ASSIGNED";
-export type RuntimeMode = "Cloud" | "BranchLocal";
+export type Role = 'Admin' | 'Pharmacist' | 'Cashier';
+export type BranchScope = 'ALL' | 'ASSIGNED';
+export type RuntimeMode = 'Cloud' | 'BranchLocal';
 
 export type PermissionScope =
-  | "inventory:read"
-  | "inventory:write"
-  | "sales:read"
-  | "sales:write"
-  | "return:read"
-  | "return:write"
-  | "purchase-order:read"
-  | "purchase-order:draft"
-  | "purchase-order:approve"
-  | "purchase-order:receive"
-  | "supplier-payment:write"
-  | "sync:retry"
-  | "user:admin";
+  | 'inventory:read'
+  | 'inventory:write'
+  | 'sales:read'
+  | 'sales:write'
+  | 'return:read'
+  | 'return:write'
+  | 'purchase-order:read'
+  | 'purchase-order:draft'
+  | 'purchase-order:approve'
+  | 'purchase-order:receive'
+  | 'supplier-payment:write'
+  | 'sync:retry'
+  | 'user:admin';
 
 /** JWT claims shape (verified payload) — §8.5 */
 export interface JwtClaims {
@@ -72,27 +72,27 @@ export interface JwtClaims {
 // ---------------------------------------------------------------------------
 
 export type ApiErrorCode =
-  | "MALFORMED_REQUEST" // 400
-  | "UNAUTHORIZED" // 401
-  | "FORBIDDEN" // 403
-  | "FORBIDDEN_BRANCH"; // 403 (branch scope failure)
+  | 'MALFORMED_REQUEST' // 400
+  | 'UNAUTHORIZED' // 401
+  | 'FORBIDDEN' // 403
+  | 'FORBIDDEN_BRANCH'; // 403 (branch scope failure)
 
 export type ApiErrorCodeConflicts =
-  | "NOT_FOUND" // 404
-  | "CONFLICT" // 409
-  | "INVALID_STATE_TRANSITION" // 409
-  | "OUT_OF_STOCK" // 409
-  | "IDEMPOTENCY_MISMATCH"; // 409
+  | 'NOT_FOUND' // 404
+  | 'CONFLICT' // 409
+  | 'INVALID_STATE_TRANSITION' // 409
+  | 'OUT_OF_STOCK' // 409
+  | 'IDEMPOTENCY_MISMATCH'; // 409
 
 export type ApiErrorCodeValidations =
-  | "VALIDATION_ERROR" // 422
-  | "EXPIRY_POLICY_VIOLATION"; // 422
+  | 'VALIDATION_ERROR' // 422
+  | 'EXPIRY_POLICY_VIOLATION'; // 422
 
 export type ApiErrorCodeAll =
   | ApiErrorCode
   | ApiErrorCodeConflicts
   | ApiErrorCodeValidations
-  | "INTERNAL_ERROR"; // 500
+  | 'INTERNAL_ERROR'; // 500
 
 export interface ApiErrorDetail {
   field: string; // JSON path, e.g. "lines[0].quantity"
@@ -111,7 +111,7 @@ export interface ApiError {
 /** 409 with per-line stock detail on checkout */
 export interface OutOfStockError extends ApiError {
   error: {
-    code: "OUT_OF_STOCK";
+    code: 'OUT_OF_STOCK';
     message: string;
     details: ApiErrorDetail[]; // which lines were short
     trace_id: string;
@@ -134,7 +134,7 @@ export interface PagedResult<T> {
 
 /** Attach to every mutating request */
 export interface MutationHeaders {
-  "Idempotency-Key": string; // stable per logical operation; min 16, max 100 chars
+  'Idempotency-Key': string; // stable per logical operation; min 16, max 100 chars
   traceparent?: string; // W3C trace context
 }
 

@@ -12,13 +12,7 @@
  *  - tax_rate is fractional: "0.1400" == 14%.
  *  - Reorder rules are read/config only — never auto-create POs.
  */
-import type {
-  Uuid,
-  Timestamp,
-  Numeric4,
-  Numeric6,
-  TaxRate,
-} from "./common";
+import type { Uuid, Timestamp, Numeric4, Numeric6, TaxRate } from './common';
 
 // ---------------------------------------------------------------------------
 // ProductCategory
@@ -86,7 +80,7 @@ export interface ProductUomPatchRequest {
 }
 
 /** Representative of { product_id, uom_code, factor, price, is_base, active } */
-export interface ProductUomListItem extends ProductUomDto {}
+export type ProductUomListItem = ProductUomDto;
 
 export interface ProductDto {
   product_id: Uuid;

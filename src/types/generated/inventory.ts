@@ -17,35 +17,33 @@ import type {
   Numeric4,
   Numeric6,
   BusinessDate,
-} from "./common";
+} from './common';
 
 // ---------------------------------------------------------------------------
 // Enums / value sets (closed sets, case-sensitive)
 // ---------------------------------------------------------------------------
 
-export type LocationType = "SELLABLE" | "QUARANTINE" | "DAMAGED" | "SCRAP";
+export type LocationType = 'SELLABLE' | 'QUARANTINE' | 'DAMAGED' | 'SCRAP';
 
-export type BatchQualityStatus = "AVAILABLE" | "QUARANTINED" | "EXPIRED" | "RECALLED";
+export type BatchQualityStatus =
+  'AVAILABLE' | 'QUARANTINED' | 'EXPIRED' | 'RECALLED';
 
 export type InventoryTxnType =
-  | "OPENING_BALANCE" // + lines; requires authorized per-line unit cost
-  | "ADJUSTMENT_IN" // + lines; requires authorized per-line unit cost
-  | "ADJUSTMENT_OUT" // - lines; server uses current balance cost
-  | "SALE_ISSUE" // - lines (Stage 2)
-  | "SALES_RETURN_IN" // + lines (Stage 2)
-  | "PURCHASE_RECEIPT" // + lines (Stage 3)
-  | "VENDOR_RETURN_OUT" // - lines (Stage 3)
-  | "SCRAP_OUT" // - lines, paired atomically with SALES_RETURN_IN
-  | "REVERSAL"; // exactly negates reverses_inventory_txn_id target
+  | 'OPENING_BALANCE' // + lines; requires authorized per-line unit cost
+  | 'ADJUSTMENT_IN' // + lines; requires authorized per-line unit cost
+  | 'ADJUSTMENT_OUT' // - lines; server uses current balance cost
+  | 'SALE_ISSUE' // - lines (Stage 2)
+  | 'SALES_RETURN_IN' // + lines (Stage 2)
+  | 'PURCHASE_RECEIPT' // + lines (Stage 3)
+  | 'VENDOR_RETURN_OUT' // - lines (Stage 3)
+  | 'SCRAP_OUT' // - lines, paired atomically with SALES_RETURN_IN
+  | 'REVERSAL'; // exactly negates reverses_inventory_txn_id target
 
-export type InventoryTxnStatus = "DRAFT" | "POSTED" | "CANCELLED";
+export type InventoryTxnStatus = 'DRAFT' | 'POSTED' | 'CANCELLED';
 
 /** Types permissible on POST /api/v1/inventory/adjustments */
 export type AdjustmentsTxnType =
-  | "OPENING_BALANCE"
-  | "ADJUSTMENT_IN"
-  | "ADJUSTMENT_OUT"
-  | "REVERSAL";
+  'OPENING_BALANCE' | 'ADJUSTMENT_IN' | 'ADJUSTMENT_OUT' | 'REVERSAL';
 
 // ---------------------------------------------------------------------------
 // Locations & batches

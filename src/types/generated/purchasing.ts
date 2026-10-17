@@ -29,26 +29,26 @@ import type {
   BusinessDate,
   Role,
   BranchScope,
-} from "./common";
-import type { AddressDto } from "./common";
-import type { InventoryTxnDto } from "./inventory";
+} from './common';
+import type { AddressDto } from './common';
+import type { InventoryTxnDto } from './inventory';
 
 // ---------------------------------------------------------------------------
 // Closed value sets
 // ---------------------------------------------------------------------------
 
 export type PurchaseOrderStatus =
-  | "DRAFT"
-  | "APPROVED"
-  | "ORDERED"
-  | "PARTIALLY_RECEIVED"
-  | "RECEIVED"
-  | "CLOSED"
-  | "CANCELLED";
+  | 'DRAFT'
+  | 'APPROVED'
+  | 'ORDERED'
+  | 'PARTIALLY_RECEIVED'
+  | 'RECEIVED'
+  | 'CLOSED'
+  | 'CANCELLED';
 
-export type PurchaseOrderPaymentStatus = "UNPAID" | "PARTIALLY_PAID" | "PAID";
-export type SupplierPaymentMethod = "CASH";
-export type VendorReturnStatus = "DRAFT" | "POSTED" | "CANCELLED";
+export type PurchaseOrderPaymentStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID';
+export type SupplierPaymentMethod = 'CASH';
+export type VendorReturnStatus = 'DRAFT' | 'POSTED' | 'CANCELLED';
 
 // ---------------------------------------------------------------------------
 // Supplier (Cloud)
@@ -174,10 +174,8 @@ export interface CancelPurchaseOrderRemainingRequest {
   note?: string | null;
 }
 
-export interface OrderPurchaseOrderRequest {
-  // empty body
-}
-
+/** Empty request body for POST /api/v1/purchasing/orders/{id}/order */
+export type OrderPurchaseOrderRequest = Record<string, never>;
 // ---------------------------------------------------------------------------
 // One-step receiving (BranchLocal)
 // ---------------------------------------------------------------------------

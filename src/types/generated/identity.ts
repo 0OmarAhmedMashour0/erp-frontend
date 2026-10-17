@@ -11,7 +11,7 @@ import type {
   BranchScope,
   BusinessDate,
   AddressDto,
-} from "./common";
+} from './common';
 
 // ---------------------------------------------------------------------------
 // Organization
@@ -51,7 +51,7 @@ export interface OrganizationSetupResult {
   branch: BranchDto;
   employee: EmployeeDto;
   user: UserDto;
-  enrollment_setup_state: "PENDING" | "ENROLLED" | "FAILED";
+  enrollment_setup_state: 'PENDING' | 'ENROLLED' | 'FAILED';
 }
 
 // ---------------------------------------------------------------------------

@@ -1,13 +1,13 @@
 /**
  * Pharmacy ERP — Authoritative API Type Aliases & Re-exports
- * 
+ *
  * Strict architectural rule:
  * All domain types derive exclusively from `src/types/generated/`.
  * NO handwritten API shapes, NO duplicates, NO `any`.
  */
 
 // 1. Full re-export of all generated domain contracts
-export * from "./generated";
+export * from './generated';
 
 // 2. Ergonomic domain entity aliases for UI and feature modules
 import type {
@@ -46,7 +46,7 @@ import type {
   VendorReturnDto,
   VendorReturnLineDto,
   PurchaseReceiptResult,
-} from "./generated";
+} from './generated';
 
 // Shorter, ergonomic aliases for frontend screens
 export type CurrentUser = CurrentUserContext;
@@ -88,15 +88,26 @@ export type GoodsReceiptResult = PurchaseReceiptResult;
 // Derived projection types for lists & tables (using Pick/Omit/Extract)
 export type SaleInvoiceSummary = Pick<
   SalesInvoiceDto,
-  "invoice_id" | "invoice_no" | "grand_total" | "paid_amount" | "payment_status" | "issued_at"
+  | 'invoice_id'
+  | 'invoice_no'
+  | 'grand_total'
+  | 'paid_amount'
+  | 'payment_status'
+  | 'issued_at'
 >;
 
 export type PurchaseOrderSummary = Pick<
   PurchaseOrderDto,
-  "purchase_order_id" | "po_no" | "supplier_id" | "status" | "total_amount" | "payment_status" | "created_at"
+  | 'purchase_order_id'
+  | 'po_no'
+  | 'supplier_id'
+  | 'status'
+  | 'total_amount'
+  | 'payment_status'
+  | 'created_at'
 >;
 
 export type SupplierSummary = Pick<
   SupplierDto,
-  "supplier_id" | "supplier_code" | "legal_name" | "phone" | "is_active"
+  'supplier_id' | 'supplier_code' | 'legal_name' | 'phone' | 'is_active'
 >;

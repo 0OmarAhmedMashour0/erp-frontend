@@ -23,20 +23,21 @@ import type {
   Numeric4,
   Numeric6,
   TaxRate,
-} from "./common";
-import type { InventoryTxnDto } from "./inventory";
+} from './common';
+import type { InventoryTxnDto } from './inventory';
 
 // ---------------------------------------------------------------------------
 // Closed value sets
 // ---------------------------------------------------------------------------
 
-export type SalesOrderStatus = "DRAFT" | "COMPLETED" | "CANCELLED";
-export type InvoiceStatus = "ISSUED";
-export type InvoicePaymentStatus = "PAID" | "PARTIALLY_REFUNDED" | "REFUNDED";
-export type PaymentMethod = "CASH"; // MVP: cash only
-export type ReturnDisposition = "RESTOCK" | "QUARANTINE" | "SCRAP";
-export type SalesReturnStatus = "DRAFT" | "POSTED" | "CANCELLED";
-export type SalesRefundStatus = "NOT_REFUNDED" | "PARTIALLY_REFUNDED" | "REFUNDED";
+export type SalesOrderStatus = 'DRAFT' | 'COMPLETED' | 'CANCELLED';
+export type InvoiceStatus = 'ISSUED';
+export type InvoicePaymentStatus = 'PAID' | 'PARTIALLY_REFUNDED' | 'REFUNDED';
+export type PaymentMethod = 'CASH'; // MVP: cash only
+export type ReturnDisposition = 'RESTOCK' | 'QUARANTINE' | 'SCRAP';
+export type SalesReturnStatus = 'DRAFT' | 'POSTED' | 'CANCELLED';
+export type SalesRefundStatus =
+  'NOT_REFUNDED' | 'PARTIALLY_REFUNDED' | 'REFUNDED';
 
 // ---------------------------------------------------------------------------
 // Orders (draft cart)
@@ -61,7 +62,7 @@ export interface SalesOrderDto {
   branch_id: Uuid;
   created_by_employee_id: Uuid;
   order_no: string;
-  channel: "POS";
+  channel: 'POS';
   order_status: SalesOrderStatus;
   currency_code: string; // = Organization base_currency
   estimated_subtotal: Money;
